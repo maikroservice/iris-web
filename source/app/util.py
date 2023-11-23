@@ -467,7 +467,8 @@ def not_authenticated_redirection_url(request_url: str):
     redirection_mapper = {
         "oidc_proxy": lambda: app.config.get("AUTHENTICATION_PROXY_LOGOUT_URL"),
         "local": lambda: url_for('login.login', next=request_url),
-        "ldap": lambda: url_for('login.login', next=request_url)
+        "ldap": lambda: url_for('login.login', next=request_url),
+        "saml": lambda: app.config.get("SAML_AUTHENTICATION_PROXY_LOGOUT_URL")
     }
 
     return redirection_mapper.get(app.config.get("AUTHENTICATION_TYPE"))()
@@ -477,7 +478,8 @@ def is_user_authenticated(incoming_request: Request):
     authentication_mapper = {
         "oidc_proxy": _oidc_proxy_authentication_process,
         "local": _local_authentication_process,
-        "ldap": _local_authentication_process
+        "ldap": _local_authentication_process,
+        "saml": _saml_authentication_process
     }
 
     return authentication_mapper.get(app.config.get("AUTHENTICATION_TYPE"))(incoming_request)
@@ -489,6 +491,9 @@ def is_authentication_local():
 
 def is_authentication_ldap():
     return app.config.get('AUTHENTICATION_TYPE') == "ldap"
+
+def is_authentication_saml():
+    return app.config.get('AUTHENTICATION_TYPE') == "saml"
 
 
 def api_login_required(f):

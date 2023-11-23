@@ -459,6 +459,8 @@ class Config:
             LDAP_CUSTOM_TLS_CONFIG = config.load('LDAP', 'CUSTOM_TLS_CONFIG', fallback='True')
             LDAP_CUSTOM_TLS_CONFIG = (LDAP_CUSTOM_TLS_CONFIG == 'True')
 
+    elif authentication_type == 'saml':
+        pass
     """ Caching 
     """
     CACHE_TYPE = "SimpleCache"

@@ -55,6 +55,7 @@ services:
       - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
       - ./certificates/:/home/iris/certificates/:ro
       - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - ./certificates/saml/:/iriswebapp/certificates/saml/:ro
       - iris-downloads:/home/iris/downloads
       - user_templates:/home/iris/user_templates
       - server_data:/home/iris/server_data
@@ -92,6 +93,7 @@ services:
       - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
       - ./certificates/:/home/iris/certificates/:ro
       - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - ./certificates/saml/:/iriswebapp/certificates/saml/:ro
       - iris-downloads:/home/iris/downloads
       - user_templates:/home/iris/user_templates
       - server_data:/home/iris/server_data

@@ -36,6 +36,7 @@ from app import db
 
 from app.forms import LoginForm
 from app.iris_engine.access_control.ldap_handler import ldap_authenticate
+from app.iris_engine.access_control.saml_handler import saml_authenticate
 from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
 from app.iris_engine.utils.tracker import track_activity
 from app.models.cases import Cases

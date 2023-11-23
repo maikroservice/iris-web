@@ -66,6 +66,7 @@ COPY docker/webApp/wait-for-iriswebapp.sh .
 COPY ../../certificates /home/iris/certificates/
 COPY ../../certificates/rootCA/irisRootCACert.pem /etc/irisRootCACert.pem
 COPY ../../certificates/ldap/ /iriswebapp/certificates/ldap/
+COPY ../../certificates/saml/ /iriswebapp/certificates/saml/
 COPY ./source .
 
 # Add execution right to binaries needed by evtx2splunk for iris_evtx module
