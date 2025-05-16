@@ -3,6 +3,8 @@ import { expect } from '@playwright/test';
 import Api from '../../api.js';
 import crypto from 'node:crypto';
 
+const _IOC_DEFAULT_ATTRIBUTE_IDENTIFIER = 1;
+
 test.beforeEach(async({ page }) => {
     await page.goto('/case/ioc?cid=1');
 });
@@ -61,4 +63,30 @@ test('should paginate the IOCs', async ({ page, rest }) => {
 
     await page.goto(`/case/ioc?cid=${caseIdentifier}`);
     await expect(page.getByRole('link', { name: '2', exact: true })).toBeVisible();
+});
+
+test('should be able to update IOC custom attribute', async ({ page, rest }) => {
+    const fieldName = 'some_field';
+    const defaultValue = 'custom attribute default value';
+    await rest.post(`/manage/attributes/update/${_IOC_DEFAULT_ATTRIBUTE_IDENTIFIER}`, {
+        data: {
+	        attribute_content: `{"tab": {"${fieldName}": {"type": "input_string", "mandatory": false, "value": "${defaultValue}"}}}`,
+	        complete_overwrite: false,
+	        partial_overwrite: false
+        }
+    })
+    const iocValue = `IOC value - ${crypto.randomUUID()}`;
+
+    await page.getByRole('button', { name: 'Add IOC' }).click();
+    await page.getByRole('tab', { name: 'tab' }).click();
+    await expect(page.getByText(fieldName)).toBeVisible();
+    await expect(page.locator(`#inpstd_1_${fieldName}`)).toHaveValue(defaultValue);
+
+    await rest.post(`/manage/attributes/update/${_IOC_DEFAULT_ATTRIBUTE_IDENTIFIER}`, {
+        data: {
+	        attribute_content: '{}',
+	        complete_overwrite: false,
+	        partial_overwrite: false
+        }
+    })
 });
