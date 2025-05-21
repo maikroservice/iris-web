@@ -19,6 +19,7 @@
 from unittest import TestCase
 from iris import Iris
 
+_PERMISSION_ALERTS_DELETE = 0x10
 _PERMISSION_ALERTS_WRITE = 0x8
 _PERMISSION_ALERTS_READ = 0x4
 _IDENTIFIER_FOR_NONEXISTENT_OBJECT = 123456789
@@ -267,7 +268,7 @@ class TestsRestAlerts(TestCase):
         }
         response = self._subject.create('api/v2/alerts', body).json()
         identifier = response['alert_id']
-        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title' : 'new_title'})
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title': 'new_title'})
         self.assertEqual(200, response.status_code)
 
     def test_update_alert_should_return_alert_title(self):
@@ -280,7 +281,7 @@ class TestsRestAlerts(TestCase):
         response = self._subject.create('api/v2/alerts', body).json()
         identifier = response['alert_id']
         alert_title = 'new_title'
-        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title' :alert_title}).json()
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title': alert_title}).json()
         self.assertEqual(alert_title, response['alert_title'])
     
     def test_update_alert_should_return_alert_uuid(self):
@@ -294,11 +295,11 @@ class TestsRestAlerts(TestCase):
         response = self._subject.create('api/v2/alerts', body).json()
         identifier = response['alert_id']
         uuid = response['alert_uuid']
-        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title' : alert_title}).json()
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_title': alert_title}).json()
         self.assertEqual(uuid, response['alert_uuid'])
 
     def test_update_alert_should_return_404_when_alert_not_found(self):
-        response = self._subject.update(f'/api/v2/alerts/{_IDENTIFIER_FOR_NONEXISTENT_OBJECT}', {'alert_title' : 'alert_title'})
+        response = self._subject.update(f'/api/v2/alerts/{_IDENTIFIER_FOR_NONEXISTENT_OBJECT}', {'alert_title': 'alert_title'})
         self.assertEqual(404, response.status_code)
 
     def test_update_alert_should_return_403_when_user_has_no_permission_to_read_alert(self):
@@ -334,7 +335,7 @@ class TestsRestAlerts(TestCase):
         }
         response = self._subject.create('/api/v2/alerts', body).json()
         identifier = response['alert_id']
-        response = user.update(f'/api/v2/alerts/{identifier}', {'alert_title' : 'new_title'})
+        response = user.update(f'/api/v2/alerts/{identifier}', {'alert_title': 'new_title'})
         self.assertEqual(404, response.status_code)
 
     def test_update_alert_should_update_alert_context(self):
@@ -347,7 +348,7 @@ class TestsRestAlerts(TestCase):
         response = self._subject.create('api/v2/alerts', body).json()
         identifier = response['alert_id']
         alert_context = {'context_key': 'key'}
-        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_context' : alert_context}).json()
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_context': alert_context}).json()
         self.assertEqual(alert_context, response['alert_context'])
 
     def test_update_alert_should_update_alert_source_content(self):
@@ -364,42 +365,107 @@ class TestsRestAlerts(TestCase):
             'contextId': '206e2965-6533-48a6-ba9e-794364a84bf9',
             'description': 'Contoso user performed 11 suspicious activities MITRE'
         }
-        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_source_content' : alert_source_content}).json()
+        response = self._subject.update(f'/api/v2/alerts/{identifier}', {'alert_source_content': alert_source_content}).json()
         self.assertEqual(alert_source_content, response['alert_source_content'])
 
     def test_create_alert_should_return_asset_name_when_we_add_asset(self):
-        asset_name = "My super asset"
+        asset_name = 'My super asset'
         body = {
             'alert_title': 'title',
             'alert_severity_id': 4,
             'alert_status_id': 3,
             'alert_customer_id': 1,
-            "alert_assets": [{
-            "asset_name": asset_name,
-            "asset_description": "Asset description",
-            "asset_type_id": 1,
-            "asset_ip": "1.1.1.1",
-            "asset_domain": "",
-            "asset_tags": "tag1,tag2",
+            'alert_assets': [{
+            'asset_name': asset_name,
+            'asset_description': 'Asset description',
+            'asset_type_id': 1,
+            'asset_ip': '1.1.1.1',
+            'asset_domain': '',
+            'asset_tags': 'tag1,tag2',
             }]
         }
         response = self._subject.create('/api/v2/alerts', body).json()
         self.assertEqual(asset_name, response['assets'][0]['asset_name'])
 
     def test_create_alert_should_return_ioc_value_when_we_add_ioc(self):
-        ioc_value = "Tarzan 5"
+        ioc_value = 'Tarzan 5'
         body = {
             'alert_title': 'title',
             'alert_severity_id': 4,
             'alert_status_id': 3,
             'alert_customer_id': 1,
-            "alert_iocs": [{
-                "ioc_value": ioc_value,
-                "ioc_description": "description of Tarzan",
-                "ioc_tlp_id": 1,
-                "ioc_type_id": 2,
-                "ioc_tags": "tag1,tag2",
+            'alert_iocs': [{
+                'ioc_value': ioc_value,
+                'ioc_description': 'description of Tarzan',
+                'ioc_tlp_id': 1,
+                'ioc_type_id': 2,
+                'ioc_tags': 'tag1,tag2',
             }]
         }
         response = self._subject.create('/api/v2/alerts', body).json()
         self.assertEqual(ioc_value, response['iocs'][0]['ioc_value'])
+
+    def test_delete_alert_should_return_204(self):
+        body = {
+            'alert_title': 'title',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1
+        }
+        response = self._subject.create('api/v2/alerts', body).json()
+        identifier = response['alert_id']
+        response = self._subject.delete(f'/api/v2/alerts/{identifier}')
+        self.assertEqual(204, response.status_code)
+
+    def test_delete_alert_should_return_404_when_alert_not_found(self):
+        response = self._subject.delete(f'/api/v2/alerts/{_IDENTIFIER_FOR_NONEXISTENT_OBJECT}')
+        self.assertEqual(404, response.status_code)
+    
+    def test_delete_alert_should_return_403_when_user_has_no_permission_to_delete_alert(self):
+        user = self._subject.create_dummy_user()
+        body = {
+            'alert_title': 'title',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1
+        }
+        response = self._subject.create('api/v2/alerts', body).json()
+        identifier = response['alert_id']
+        response = user.delete(f'/api/v2/alerts/{identifier}')
+        self.assertEqual(403, response.status_code)
+
+    def test_delete_alert_should_return_404_when_user_has_no_customer_access(self):
+        body = {
+            'group_name': 'Customer delete',
+            'group_description': 'Group with customers can delete alert',
+            'group_permissions': [_PERMISSION_ALERTS_DELETE]
+        }
+        response = self._subject.create('/manage/groups/add', body).json()
+        group_identifier = response['data']['group_id']
+        user = self._subject.create_dummy_user()
+        body = {'groups_membership': [group_identifier]}
+        self._subject.create(f'/manage/users/{user.get_identifier()}/groups/update', body)
+
+        body = {
+            'alert_title': 'title',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1,
+        }
+        response = self._subject.create('/api/v2/alerts', body).json()
+        identifier = response['alert_id']
+        response = user.delete(f'/api/v2/alerts/{identifier}')
+        self.assertEqual(404, response.status_code)
+    
+    def test_get_alert_should_return_404_after_delete_alert(self):
+        body = {
+            'alert_title': 'title',
+            'alert_severity_id': 4,
+            'alert_status_id': 3,
+            'alert_customer_id': 1
+        }
+        response = self._subject.create('api/v2/alerts', body).json()
+        identifier = response['alert_id']
+        self._subject.delete(f'/api/v2/alerts/{identifier}')
+        response = self._subject.get(f'/api/v2/alerts/{identifier}')
+        self.assertEqual(404, response.status_code)
