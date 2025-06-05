@@ -39,7 +39,7 @@ services:
 
   app:
     container_name: iriswebapp_app
-    command: ["nohup", "./iris-entrypoint.sh", "iriswebapp"]
+    command: ["./iris-entrypoint.sh", "iriswebapp"]
     volumes:
       - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
       - ./certificates/:/home/iris/certificates/:ro
