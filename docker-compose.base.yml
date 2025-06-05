@@ -41,7 +41,6 @@ services:
     container_name: iriswebapp_app
     command: ["nohup", "./iris-entrypoint.sh", "iriswebapp"]
     volumes:
-      - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
       - ./certificates/:/home/iris/certificates/:ro
       - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
       - iris-downloads:/home/iris/downloads
@@ -78,7 +77,6 @@ services:
         "iris-worker",
       ]
     volumes:
-      - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
       - ./certificates/:/home/iris/certificates/:ro
       - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
       - iris-downloads:/home/iris/downloads
