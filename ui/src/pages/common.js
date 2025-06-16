@@ -1719,6 +1719,11 @@ $('.toggle-sidebar').on('click', function() {
 });
 
 function do_deletion_prompt(message, force_prompt=false) {
+    // The whoami object needs to be refreshed to verify that the users
+    // has_deletion_confirmation value has not changed. For example,
+    // the global setting on the server to force confirmation might
+    // have been turned on during the user session.
+    userWhoamiRequest(true)
     if (userWhoami.has_deletion_confirmation || force_prompt) {
             return new Promise((resolve, reject) => {
                 swal({
