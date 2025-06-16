@@ -39,7 +39,7 @@ services:
 
   app:
     container_name: iriswebapp_app
-    command: ["nohup", "./iris-entrypoint.sh", "iriswebapp"]
+    command: ["./iris-entrypoint.sh", "iriswebapp"]
     volumes:
       - ./certificates/:/home/iris/certificates/:ro
       - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
