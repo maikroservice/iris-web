@@ -1703,7 +1703,7 @@ $('.toggle-sidebar').on('click', function() {
         $('.wrapper').removeClass('sidebar_minimize');
         get_request_api('/user/mini-sidebar/set/false')
             .then((data) => {
-                if (data.success !== 'success') {
+                if (data.status !== 'success') {
                     notify_api_request_error(data);
                 }
             });
@@ -1711,7 +1711,7 @@ $('.toggle-sidebar').on('click', function() {
         $('.wrapper').addClass('sidebar_minimize');
         get_request_api('/user/mini-sidebar/set/true')
             .then((data) => {
-                if (data.success !== 'success') {
+                if (data.status !== 'success') {
                     notify_api_request_error(data);
                 }
             });
