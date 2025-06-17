@@ -124,12 +124,6 @@ services:
     depends_on:
       - "app"
 
-volumes:
-  iris-downloads:
-  user_templates:
-  server_data:
-  db_data:
-
 networks:
   iris_backend:
     name: iris_backend
