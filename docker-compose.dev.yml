@@ -53,6 +53,11 @@ services:
     volumes:
       - ./source/app:/iriswebapp/app
       - ./ui/dist:/iriswebapp/static
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     healthcheck:
       test: curl --head --fail http://localhost:8000 || exit 1
       start_period: 60s
@@ -68,6 +73,13 @@ services:
     image: iriswebapp_app:develop
     volumes:
       - ./source/app:/iriswebapp/app
+    depends_on:
+      app:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
   nginx:
     extends:
@@ -79,6 +91,11 @@ services:
         NGINX_CONF_GID: 1234
         NGINX_CONF_FILE: ${NGINX_CONF_FILE:-nginx.conf}
     image: iriswebapp_nginx:develop
+    depends_on:
+      app:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
 
   frontend:
     image: node:23-alpine
