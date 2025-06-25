@@ -21,6 +21,10 @@ services:
       file: docker-compose.base.yml
       service: rabbitmq
     user: rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics check_port_connectivityAdd commentMore actions
+      start_period: 60s
+      start_interval: 1s
 
   db:
     extends:
