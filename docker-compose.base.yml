@@ -19,13 +19,11 @@ services:
   rabbitmq:
     image: rabbitmq:3-management-alpine
     container_name: iriswebapp_rabbitmq
-    restart: always
     networks:
       - iris_backend
 
   db:
     container_name: iriswebapp_db
-    restart: always
     environment:
       - POSTGRES_USER
       - POSTGRES_PASSWORD
@@ -46,7 +44,6 @@ services:
       - iris-downloads:/home/iris/downloads
       - user_templates:/home/iris/user_templates
       - server_data:/home/iris/server_data
-    restart: always
     depends_on:
       - "rabbitmq"
       - "db"
@@ -68,7 +65,6 @@ services:
 
   worker:
     container_name: iriswebapp_worker
-    restart: always
     command:
       [
         "./wait-for-iriswebapp.sh",
@@ -120,7 +116,6 @@ services:
       - "${INTERFACE_HTTPS_PORT:-443}:${INTERFACE_HTTPS_PORT:-443}"
     volumes:
       - "./certificates/web_certificates/:/www/certs/:ro"
-    restart: always
     depends_on:
       - "app"
 
