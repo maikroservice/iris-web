@@ -20,6 +20,7 @@ services:
     extends:
       file: docker-compose.base.yml
       service: rabbitmq
+    user: rabbitmq
 
   db:
     extends:
