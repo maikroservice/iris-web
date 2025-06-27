@@ -21,6 +21,10 @@ services:
       file: docker-compose.base.yml
       service: rabbitmq
     user: rabbitmq
+    healthcheck:
+      test: rabbitmq-diagnostics check_port_connectivity || exit 1
+      start_period: 60s
+      start_interval: 1s
 
   db:
     extends:
@@ -32,7 +36,7 @@ services:
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
-      test: pg_isready -U postgres -d iris_db
+      test: pg_isready -U postgres -d iris_db || exit 1
       start_period: 60s
       start_interval: 1s
 
@@ -49,6 +53,11 @@ services:
     volumes:
       - ./source/app:/iriswebapp/app
       - ./ui/dist:/iriswebapp/static
+    depends_on:
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
     healthcheck:
       test: curl --head --fail http://localhost:8000 || exit 1
       start_period: 60s
@@ -64,6 +73,17 @@ services:
     image: iriswebapp_app:develop
     volumes:
       - ./source/app:/iriswebapp/app
+    depends_on:
+      app:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: celery -A app.celery inspect ping || exit 1
+      start_period: 60s
+      start_interval: 1s
 
   nginx:
     extends:
@@ -75,6 +95,11 @@ services:
         NGINX_CONF_GID: 1234
         NGINX_CONF_FILE: ${NGINX_CONF_FILE:-nginx.conf}
     image: iriswebapp_nginx:develop
+    depends_on:
+      app:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
 
   frontend:
     image: node:23-alpine
