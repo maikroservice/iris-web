@@ -133,7 +133,7 @@ function get_case_assets() {
                 Table.clear();
                 Table.rows.add(jsdata.assets);
                 Table.columns.adjust().draw();
-                load_menu_mod_options('asset', Table, delete_asset, [{
+                load_menu_mod_options('asset', Table, delete_selected_assets, [{
                     type: 'option',
                     title: 'Check Alerts',
                     multi: false,
@@ -164,6 +164,41 @@ function get_case_assets() {
         } else {
             Table.clear().draw()
         }
+    })
+}
+
+/* Returns a list of selected assets */
+function get_selected_asset_ids() {
+    let asset_ids = $("table .selected a")
+        .map((index, element) => element.dataset.asset_id)
+        .get();
+    return asset_ids;
+}
+
+/* Deletes all selected assets */
+function delete_selected_assets() {
+    let asset_ids = get_selected_asset_ids();
+    let asset_ids_str = asset_ids.join(", ");
+    let prompt_message = `You are about to delete assets: ${asset_ids_str}`;
+    do_deletion_prompt(prompt_message).then((doDelete) => {
+        if (!doDelete) {
+            return;
+        }
+        let cid = get_caseid();
+        asset_ids.forEach(asset_id => {
+                let url = `/api/v2/cases/${cid}/assets/${asset_id}`;
+                delete_request_api(url).done((data, textStatus) => {
+                    if (textStatus === "nocontent") {
+                        reload_assets();
+                        notify_success(`Assets deleted: ${asset_id}`);
+                        return;
+                    }
+                    notify_error(`Unable to delete asset: ${asset_id}`);
+                });
+            }
+        )
+        reload_assets();
+        $('#modal_add_asset').modal('hide');
     })
 }
 
