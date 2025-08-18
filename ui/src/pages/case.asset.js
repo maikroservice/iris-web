@@ -186,17 +186,16 @@ function delete_selected_assets() {
         }
         let cid = get_caseid();
         asset_ids.forEach(asset_id => {
-                let url = `/api/v2/cases/${cid}/assets/${asset_id}`;
-                delete_request_api(url).done((data, textStatus) => {
-                    if (textStatus === "nocontent") {
-                        reload_assets();
-                        notify_success(`Assets deleted: ${asset_id}`);
-                        return;
-                    }
-                    notify_error(`Unable to delete asset: ${asset_id}`);
-                });
-            }
-        )
+            let url = `/api/v2/cases/${cid}/assets/${asset_id}`;
+            delete_request_api(url).done((data, textStatus) => {
+                if (textStatus === "nocontent") {
+                    reload_assets();
+                    notify_success(`Assets deleted: ${asset_id}`);
+                    return;
+                }
+                notify_error(`Unable to delete asset: ${asset_id}`);
+            });
+        });
         reload_assets();
         $('#modal_add_asset').modal('hide');
     })
