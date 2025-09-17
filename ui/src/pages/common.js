@@ -1394,7 +1394,7 @@ function load_add_case() {
              ajax_notify_error(xhr, '/case/add');
              return false;
         }
-        $('#case_customer').selectpicker({
+        $('#case_customer_id').selectpicker({
             liveSearch: true,
             title: "Select customer *",
             style: "btn-outline-white",
