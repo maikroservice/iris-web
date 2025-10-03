@@ -3,7 +3,7 @@
  *************************/
 
 /* create the select picker for customer */
-$('#case_customer').selectpicker({
+$('#case_customer_id').selectpicker({
     liveSearch: true,
     title: "Select customer *",
     style: "btn-outline-white",

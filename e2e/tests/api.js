@@ -8,7 +8,7 @@ const createCase = async (rest) => {
         data: {
             case_name: caseName,
             case_description: 'Case description',
-            case_customer: 1,
+            case_customer_id: 1,
             case_soc_id: ''
         }
     });
