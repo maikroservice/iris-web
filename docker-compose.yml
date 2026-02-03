@@ -40,6 +40,18 @@ services:
     build:
       context: .
       dockerfile: docker/webApp/Dockerfile
+    image: iriswebapp_app:v2.3.3
+    container_name: iriswebapp_app
+    command: ['nohup', './iris-entrypoint.sh', 'iriswebapp']
+    volumes:
+      # RootCA necessary when dealing with an auth server without a trusted CA signed certificate
+      - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
+      - ./certificates/:/home/iris/certificates/:ro
+      - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - ./certificates/saml/:/iriswebapp/certificates/saml/:ro
+      - iris-downloads:/home/iris/downloads
+      - user_templates:/home/iris/user_templates
+      - server_data:/home/iris/server_data
     restart: always
 
 
@@ -51,8 +63,36 @@ services:
     build:
       context: .
       dockerfile: docker/webApp/Dockerfile
-    restart: always
-
+    image: iriswebapp_app:v2.3.3
+    container_name: iriswebapp_worker
+    command: ['./wait-for-iriswebapp.sh', 'app:8000', './iris-entrypoint.sh', 'iris-worker']
+    volumes:
+      - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
+      - ./certificates/:/home/iris/certificates/:ro
+      - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - ./certificates/saml/:/iriswebapp/certificates/saml/:ro
+      - iris-downloads:/home/iris/downloads
+      - user_templates:/home/iris/user_templates
+      - server_data:/home/iris/server_data
+    depends_on:
+      - "rabbitmq"
+      - "db"
+      - "app"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_ADMIN_USER
+      - POSTGRES_ADMIN_PASSWORD
+      - POSTGRES_SERVER
+      - POSTGRES_PORT
+      - DOCKERIZED
+      - IRIS_SECRET_KEY
+      - IRIS_SECURITY_PASSWORD_SALT
+      - IRIS_WORKER
+    networks:
+      - iris_backend
 
   nginx:
     extends:
