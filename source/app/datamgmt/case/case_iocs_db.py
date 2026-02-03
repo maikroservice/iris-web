@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -17,50 +15,52 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-from flask_login import current_user
+
 from sqlalchemy import and_
 
-from app import db
+from app.datamgmt.db_operations import db_create
+from app.datamgmt.db_operations import db_delete
+from app.db import db
+from app.datamgmt.filtering import get_filtered_data
 from app.datamgmt.states import update_ioc_state
-from app.iris_engine.access_control.utils import ac_get_fast_user_cases_access
-from app.models import CaseEventsIoc
-from app.models import Cases
-from app.models import Client
-from app.models import Comments
-from app.models import Ioc
-from app.models import IocAssetLink
-from app.models import IocComments
-from app.models import IocLink
-from app.models import IocType
-from app.models import Tlp
+from app.models.alerts import Alert
+from app.models.cases import Cases
+from app.models.cases import CasesEvent
+from app.models.customers import Client
+from app.models.assets import CaseAssets
+from app.models.comments import Comments
+from app.models.comments import IocComments
+from app.models.iocs import Ioc
+from app.models.models import IocType
+from app.models.iocs import Tlp
 from app.models.authorization import User
+from app.models.pagination_parameters import PaginationParameters
+from app.util import add_obj_history_entry
 
 
-def get_iocs(caseid):
-    iocs = IocLink.query.with_entities(
-        Ioc.ioc_value,
-        Ioc.ioc_id,
-        Ioc.ioc_uuid
-    ).filter(
-        IocLink.case_id == caseid,
-        IocLink.ioc_id == Ioc.ioc_id
+relationship_model_map = {
+    'case': Cases,
+    'assets': CaseAssets,
+    'tlp': Tlp,
+    'events': CasesEvent,
+    'alerts': Alert,
+    'ioc_type': IocType
+}
+
+
+def get_iocs(case_identifier) -> list[Ioc]:
+    return Ioc.query.filter(
+        Ioc.case_id == case_identifier
     ).all()
-
-    return iocs
 
 
 def get_ioc(ioc_id, caseid=None):
-    if caseid:
-        return IocLink.query.with_entities(
-            Ioc
-        ).filter(and_(
-            Ioc.ioc_id == ioc_id,
-            IocLink.case_id == caseid
-        )).join(
-            IocLink.ioc
-        ).first()
+    q = Ioc.query.filter(Ioc.ioc_id == ioc_id)
 
-    return Ioc.query.filter(Ioc.ioc_id == ioc_id).first()
+    if caseid:
+        q = q.filter(Ioc.case_id == caseid)
+
+    return q.first()
 
 
 def update_ioc(ioc_type, ioc_tags, ioc_value, ioc_description, ioc_tlp, userid, ioc_id):
@@ -80,50 +80,24 @@ def update_ioc(ioc_type, ioc_tags, ioc_value, ioc_description, ioc_tlp, userid, 
         return False
 
 
-def delete_ioc(ioc, caseid):
-    with db.session.begin_nested():
-        IocLink.query.filter(
-            and_(
-                IocLink.ioc_id == ioc.ioc_id,
-                IocLink.case_id == caseid
-            )
-        ).delete()
+def delete_ioc(ioc: Ioc):
+    com_ids = IocComments.query.with_entities(
+        IocComments.comment_id
+    ).filter(
+        IocComments.comment_ioc_id == ioc.ioc_id,
+    ).all()
 
-        res = IocLink.query.filter(
-                IocLink.ioc_id == ioc.ioc_id,
-                ).all()
+    com_ids = [c.comment_id for c in com_ids]
+    IocComments.query.filter(IocComments.comment_id.in_(com_ids)).delete()
+    Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
 
-        if res:
-            return False
+    db.session.delete(ioc)
 
-        IocAssetLink.query.filter(
-            IocAssetLink.ioc_id == ioc.ioc_id
-        ).delete()
-
-        CaseEventsIoc.query.filter(
-            CaseEventsIoc.ioc_id == ioc.ioc_id
-        ).delete()
-
-        com_ids = IocComments.query.with_entities(
-            IocComments.comment_id
-        ).filter(
-            IocComments.comment_ioc_id == ioc.ioc_id
-        ).all()
-
-        com_ids = [c.comment_id for c in com_ids]
-        IocComments.query.filter(IocComments.comment_id.in_(com_ids)).delete()
-
-        Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
-
-        db.session.delete(ioc)
-
-        update_ioc_state(caseid=caseid)
-
-    return True
+    update_ioc_state(ioc.case_id)
 
 
 def get_detailed_iocs(caseid):
-    detailed_iocs = IocLink.query.with_entities(
+    detailed_iocs = (Ioc.query.with_entities(
         Ioc.ioc_id,
         Ioc.ioc_uuid,
         Ioc.ioc_value,
@@ -136,88 +110,54 @@ def get_detailed_iocs(caseid):
         Tlp.tlp_name,
         Tlp.tlp_bscolor,
         Ioc.ioc_tlp_id
-    ).filter(
-        and_(IocLink.case_id == caseid,
-             IocLink.ioc_id == Ioc.ioc_id)
-    ).join(IocLink.ioc,
-           Ioc.tlp,
-           Ioc.ioc_type
-    ).order_by(IocType.type_name).all()
+    ).filter(Ioc.case_id == caseid)
+     .join(Ioc.ioc_type)
+     .outerjoin(Ioc.tlp)
+     .order_by(IocType.type_name).all())
 
     return detailed_iocs
 
 
-def get_ioc_links(ioc_id, caseid):
-    search_condition = and_(Cases.case_id.in_([]))
-
-    user_search_limitations = ac_get_fast_user_cases_access(current_user.id)
+def get_ioc_links(ioc_id, user_search_limitations):
     if user_search_limitations:
         search_condition = and_(Cases.case_id.in_(user_search_limitations))
+    else:
+        search_condition = and_(Cases.case_id.in_([]))
 
-    ioc_link = IocLink.query.with_entities(
+    ioc = Ioc.query.filter(Ioc.ioc_id == ioc_id).first()
+
+    # Search related iocs based on value and type
+    related_iocs = (Ioc.query.with_entities(
         Cases.case_id,
         Cases.name.label('case_name'),
         Client.name.label('client_name')
     ).filter(and_(
-        IocLink.ioc_id == ioc_id,
-        IocLink.case_id != caseid,
+        Ioc.ioc_value == ioc.ioc_value,
+        Ioc.ioc_type_id == ioc.ioc_type_id,
+        Ioc.ioc_id != ioc_id,
         search_condition)
-    ).join(IocLink.case, Cases.client).all()
+    ).join(Ioc.case)
+     .join(Cases.client)
+     .all())
 
-    return ioc_link
-
-
-def find_ioc(ioc_value, ioc_type_id):
-    ioc = Ioc.query.filter(Ioc.ioc_value == ioc_value,
-                           Ioc.ioc_type_id == ioc_type_id).first()
-
-    return ioc
+    return related_iocs
 
 
-def add_ioc(ioc, user_id, caseid):
-    if not ioc:
-        return None, False
-
+def add_ioc(ioc: Ioc, user_id, caseid):
     ioc.user_id = user_id
+    ioc.case_id = caseid
+    db.session.add(ioc)
 
-    db_ioc = find_ioc(ioc.ioc_value, ioc.ioc_type_id)
-
-    if not db_ioc:
-        db.session.add(ioc)
-
-        update_ioc_state(caseid=caseid)
-        db.session.commit()
-        return ioc, False
-
-    else:
-        # IoC already exists
-        return db_ioc, True
+    update_ioc_state(caseid=caseid)
+    add_obj_history_entry(ioc, 'created ioc')
+    db.session.commit()
 
 
-def find_ioc_link(ioc_id, caseid):
-    db_link = IocLink.query.filter(
-        IocLink.case_id == caseid,
-        IocLink.ioc_id == ioc_id
-    ).first()
-
-    return db_link
-
-
-def add_ioc_link(ioc_id, caseid):
-
-    db_link = find_ioc_link(ioc_id, caseid)
-    if db_link:
-        # Link already exists
-        return True
-    else:
-        link = IocLink()
-        link.case_id = caseid
-        link.ioc_id = ioc_id
-
-        db.session.add(link)
-        db.session.commit()
-
-        return False
+def case_iocs_db_exists(ioc: Ioc):
+    iocs = Ioc.query.filter(Ioc.case_id == ioc.case_id,
+                            Ioc.ioc_value == ioc.ioc_value,
+                            Ioc.ioc_type_id == ioc.ioc_type_id)
+    return iocs.first() is not None
 
 
 def get_ioc_types_list():
@@ -234,14 +174,13 @@ def get_ioc_types_list():
     return l_types
 
 
-def add_ioc_type(name:str, description:str, taxonomy:str):
+def add_ioc_type(name: str, description: str, taxonomy: str):
     ioct = IocType(type_name=name,
                    type_description=description,
                    type_taxonomy=taxonomy
                 )
 
-    db.session.add(ioct)
-    db.session.commit()
+    db_create(ioct)
     return ioct
 
 
@@ -268,7 +207,7 @@ def get_tlps():
 def get_tlps_dict():
     tlpDict = {}
     for tlp in Tlp.query.all():
-        tlpDict[tlp.tlp_name]=tlp.tlp_id 
+        tlpDict[tlp.tlp_name] = tlp.tlp_id
     return tlpDict
 
 
@@ -290,8 +229,7 @@ def add_comment_to_ioc(ioc_id, comment_id):
     ec.comment_ioc_id = ioc_id
     ec.comment_id = comment_id
 
-    db.session.add(ec)
-    db.session.commit()
+    db_create(ec)
 
 
 def get_case_iocs_comments_count(iocs_list):
@@ -307,7 +245,7 @@ def get_case_iocs_comments_count(iocs_list):
 
 
 def get_case_ioc_comment(ioc_id, comment_id):
-    return IocComments.query.filter(
+    return (IocComments.query.filter(
         IocComments.comment_ioc_id == ioc_id,
         IocComments.comment_id == comment_id
     ).with_entities(
@@ -316,18 +254,18 @@ def get_case_ioc_comment(ioc_id, comment_id):
         Comments.comment_date,
         Comments.comment_update_date,
         Comments.comment_uuid,
+        Comments.comment_user_id,
+        Comments.comment_case_id,
         User.name,
         User.user
-    ).join(
-        IocComments.comment,
-        Comments.user
-    ).first()
+    ).join(IocComments.comment)
+            .join(Comments.user).first())
 
 
-def delete_ioc_comment(ioc_id, comment_id):
+def delete_ioc_comment(user_identifier, ioc_id, comment_id):
     comment = Comments.query.filter(
         Comments.comment_id == comment_id,
-        Comments.comment_user_id == current_user.id
+        Comments.comment_user_id == user_identifier
     ).first()
     if not comment:
         return False, "You are not allowed to delete this comment"
@@ -337,20 +275,51 @@ def delete_ioc_comment(ioc_id, comment_id):
         IocComments.comment_id == comment_id
     ).delete()
 
-    db.session.delete(comment)
-    db.session.commit()
+    db_delete(comment)
 
     return True, "Comment deleted"
 
+
 def get_ioc_by_value(ioc_value, caseid=None):
     if caseid:
-        return IocLink.query.with_entities(
-            Ioc
-        ).filter(and_(
-            Ioc.ioc_value == ioc_value,
-            IocLink.case_id == caseid
-        )).join(
-            IocLink.ioc
-        ).first()
+        Ioc.query.filter(Ioc.ioc_value == ioc_value, Ioc.case_id == caseid).first()
 
     return Ioc.query.filter(Ioc.ioc_value == ioc_value).first()
+
+
+def get_filtered_iocs(
+        caseid: int = None,
+        pagination_parameters: PaginationParameters = None,
+        request_parameters: dict = None
+    ):
+    """
+    Get a list of iocs from the database, filtered by the given parameters
+    """
+
+    base_filter = Ioc.case_id == caseid if caseid is not None else None
+    return get_filtered_data(Ioc, base_filter, pagination_parameters, request_parameters, relationship_model_map)
+
+
+def search_iocs(search_value):
+    search_condition = and_()
+    res = Ioc.query.with_entities(
+        Ioc.ioc_value.label('ioc_name'),
+        Ioc.ioc_description.label('ioc_description'),
+        Ioc.ioc_misp,
+        IocType.type_name,
+        Tlp.tlp_name,
+        Tlp.tlp_bscolor,
+        Cases.name.label('case_name'),
+        Cases.case_id,
+        Client.name.label('customer_name')
+    ).filter(
+        and_(
+            Ioc.ioc_value.like(search_value),
+            Ioc.case_id == Cases.case_id,
+            Client.client_id == Cases.client_id,
+            Ioc.ioc_tlp_id == Tlp.tlp_id,
+            search_condition
+        )
+    ).join(Ioc.ioc_type).all()
+
+    return [row._asdict() for row in res]

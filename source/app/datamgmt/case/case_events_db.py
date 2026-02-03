@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -17,24 +15,25 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-from flask_login import current_user
+
 from sqlalchemy import and_
 
-from app import db
+from app.datamgmt.db_operations import db_create
+from app.datamgmt.db_operations import db_delete
+from app.db import db
 from app.datamgmt.states import update_timeline_state
-from app.models import AssetsType
-from app.models import CaseAssets
-from app.models import CaseEventCategory
-from app.models import CaseEventsAssets
-from app.models import CaseEventsIoc
-from app.models import CasesEvent
-from app.models import Comments
-from app.models import EventCategory
-from app.models import EventComments
-from app.models import Ioc
-from app.models import IocAssetLink
-from app.models import IocLink
-from app.models import IocType
+from app.models.assets import AssetsType
+from app.models.assets import CaseAssets
+from app.models.models import CaseEventCategory
+from app.models.models import CaseEventsAssets
+from app.models.models import CaseEventsIoc
+from app.models.cases import CasesEvent
+from app.models.comments import Comments
+from app.models.comments import EventComments
+from app.models.models import EventCategory
+from app.models.iocs import Ioc
+from app.models.models import IocAssetLink
+from app.models.models import IocType
 from app.models.authorization import User
 
 
@@ -58,9 +57,11 @@ def get_case_events_assets_graph(caseid):
         CaseEventsAssets.case_id == caseid,
         CasesEvent.event_in_graph == True
     )).join(
-        CaseEventsAssets.event,
-        CaseEventsAssets.asset,
-        CaseAssets.asset_type,
+        CaseEventsAssets.event
+    ).join(
+        CaseEventsAssets.asset
+    ).join(
+        CaseAssets.asset_type
     ).all()
 
     return events
@@ -80,9 +81,11 @@ def get_case_events_ioc_graph(caseid):
         CaseEventsIoc.case_id == caseid,
         CasesEvent.event_in_graph == True
     )).join(
-        CaseEventsIoc.event,
-        CaseEventsIoc.ioc,
-        Ioc.ioc_type,
+        CaseEventsIoc.event
+    ).join(
+        CaseEventsIoc.ioc
+    ).join(
+        Ioc.ioc_type
     ).all()
 
     return events
@@ -106,10 +109,9 @@ def get_default_cat():
     return [cat._asdict()]
 
 
-def get_case_event(event_id, caseid):
+def get_case_event(event_id):
     return CasesEvent.query.filter(
-        CasesEvent.event_id == event_id,
-        CasesEvent.case_id == caseid
+        CasesEvent.event_id == event_id
     ).first()
 
 
@@ -136,7 +138,7 @@ def get_case_events_comments_count(events_list):
     ).all()
 
 
-def get_case_event_comment(event_id, comment_id, caseid):
+def get_case_event_comment(event_id, comment_id):
     return EventComments.query.filter(
         EventComments.comment_event_id == event_id,
         EventComments.comment_id == comment_id
@@ -146,18 +148,21 @@ def get_case_event_comment(event_id, comment_id, caseid):
         Comments.comment_date,
         Comments.comment_update_date,
         Comments.comment_uuid,
+        Comments.comment_user_id,
+        Comments.comment_case_id,
         User.name,
         User.user
     ).join(
-        EventComments.comment,
+        EventComments.comment
+    ).join(
         Comments.user
     ).first()
 
 
-def delete_event_comment(event_id, comment_id):
+def delete_event_comment(user_identifier, event_id, comment_id):
     comment = Comments.query.filter(
         Comments.comment_id == comment_id,
-        Comments.comment_user_id == current_user.id
+        Comments.comment_user_id == user_identifier
     ).first()
     if not comment:
         return False, "You are not allowed to delete this comment"
@@ -167,10 +172,22 @@ def delete_event_comment(event_id, comment_id):
         EventComments.comment_id == comment_id
     ).delete()
 
-    db.session.delete(comment)
-    db.session.commit()
+    db_delete(comment)
 
     return True, "Comment deleted"
+
+
+def delete_events_comments_in_case(case_identifier):
+    com_ids = EventComments.query.with_entities(
+        EventComments.comment_id
+    ).join(CasesEvent).filter(
+        EventComments.comment_event_id == CasesEvent.event_id,
+        CasesEvent.case_id == case_identifier
+    ).all()
+
+    com_ids = [c.comment_id for c in com_ids]
+    EventComments.query.filter(EventComments.comment_id.in_(com_ids)).delete()
+    Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
 
 
 def add_comment_to_event(event_id, comment_id):
@@ -178,8 +195,7 @@ def add_comment_to_event(event_id, comment_id):
     ec.comment_event_id = event_id
     ec.comment_id = comment_id
 
-    db.session.add(ec)
-    db.session.commit()
+    db_create(ec)
 
 
 def delete_event_category(event_id):
@@ -204,8 +220,7 @@ def save_event_category(event_id, category_id):
     cec.event_id = event_id
     cec.category_id = category_id
 
-    db.session.add(cec)
-    db.session.commit()
+    db_create(cec)
 
 
 def get_event_assets_ids(event_id, caseid):
@@ -283,11 +298,9 @@ def update_event_iocs(event_id, caseid, iocs_list):
         CaseEventsIoc.case_id == caseid
     ).delete()
 
-    valid_iocs = IocLink.query.with_entities(
-        IocLink.ioc_id
-    ).filter(
-        IocLink.ioc_id.in_(iocs_list),
-        IocLink.case_id == caseid
+    valid_iocs = Ioc.query.filter(
+        Ioc.ioc_id.in_(iocs_list),
+        Ioc.case_id == caseid
     ).all()
 
     for ioc in valid_iocs:
@@ -324,7 +337,7 @@ def get_case_assets_for_tm(caseid):
 
     for asset in assets_list:
         assets.append({
-            'asset_name': "{} ({})".format(asset.asset_name, asset.type),
+            'asset_name': f'{asset.asset_name} ({asset.type})',
             'asset_id': asset.asset_id
         })
 
@@ -338,33 +351,32 @@ def get_case_iocs_for_tm(caseid):
         Ioc.ioc_value,
         Ioc.ioc_id
     ).filter(
-        IocLink.case_id == caseid
-    ).join(
-        IocLink.ioc
+        Ioc.case_id == caseid
     ).order_by(
         Ioc.ioc_value
     ).all()
 
     for ioc in iocs_list:
         iocs.append({
-            'ioc_value': "{}".format(ioc.ioc_value),
+            'ioc_value': f'{ioc.ioc_value}',
             'ioc_id': ioc.ioc_id
         })
 
     return iocs
 
 
-def delete_event(event, caseid):
+def delete_event(user_identifier, event):
+    case_identifier = event.case_id
     delete_event_category(event.event_id)
 
     CaseEventsAssets.query.filter(
         CaseEventsAssets.event_id == event.event_id,
-        CaseEventsAssets.case_id == caseid
+        CaseEventsAssets.case_id == case_identifier
     ).delete()
 
     CaseEventsIoc.query.filter(
         CaseEventsIoc.event_id == event.event_id,
-        CaseEventsIoc.case_id == caseid
+        CaseEventsIoc.case_id == case_identifier
     ).delete()
 
     com_ids = EventComments.query.with_entities(
@@ -381,14 +393,14 @@ def delete_event(event, caseid):
     db.session.commit()
 
     db.session.delete(event)
-    update_timeline_state(caseid=caseid)
+    update_timeline_state(case_identifier, user_identifier)
 
     db.session.commit()
 
 
 def get_category_by_name(cat_name):
     return EventCategory.query.filter(
-        EventCategory.name  == cat_name,
+        EventCategory.name == cat_name,
     ).first()
 
 
@@ -400,3 +412,11 @@ def get_default_category():
         EventCategory.name == "Unspecified"
     ).first()
 
+
+def get_events_by_case(case_identifier):
+    return CasesEvent.query.filter(and_(
+        CasesEvent.case_id == case_identifier,
+        CasesEvent.event_in_summary
+    )).order_by(
+        CasesEvent.event_date
+    ).all()

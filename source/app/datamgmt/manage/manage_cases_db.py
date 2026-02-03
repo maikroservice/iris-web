@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -17,44 +15,60 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-from pathlib import Path
 
 from datetime import datetime
-from sqlalchemy import and_
-from sqlalchemy.orm import aliased, contains_eager, subqueryload
+from datetime import date
+from datetime import timedelta
+from pathlib import Path
 
-from app import db
+from sqlalchemy import and_
+from sqlalchemy.orm import aliased
+from functools import reduce
+
+from app.db import db
 from app.datamgmt.alerts.alerts_db import search_alert_resolution_by_name
 from app.datamgmt.case.case_db import get_case_tags
-from app.datamgmt.manage.manage_case_classifications_db import get_case_classification_by_id
 from app.datamgmt.manage.manage_case_state_db import get_case_state_by_name
+from app.datamgmt.conversions import convert_sort_direction
+from app.datamgmt.authorization import has_deny_all_access_level
 from app.datamgmt.states import delete_case_states
-from app.models import CaseAssets, CaseClassification, alert_assets_association, CaseStatus, TaskAssignee, TaskComments
-from app.models import CaseEventCategory
-from app.models import CaseEventsAssets
-from app.models import CaseEventsIoc
-from app.models import CaseReceivedFile
-from app.models import CaseTasks
-from app.models import Cases
-from app.models import CasesEvent
-from app.models import Client
-from app.models import DataStoreFile
-from app.models import DataStorePath
-from app.models import IocAssetLink
-from app.models import IocLink
-from app.models import Notes
-from app.models import NotesGroup
-from app.models import NotesGroupLink
-from app.models.alerts import Alert, AlertCaseAssociation
+from app.models.models import NoteRevisions
+from app.models.assets import alert_assets_association, CaseAssets
+from app.models.models import TaskAssignee
+from app.models.models import NoteDirectory
+from app.models.models import Tags
+from app.models.models import CaseEventCategory
+from app.models.models import CaseEventsAssets
+from app.models.models import CaseEventsIoc
+from app.models.evidences import CaseReceivedFile
+from app.models.models import CaseTasks
+from app.models.cases import Cases, CaseStatus, CaseClassification
+from app.models.cases import CasesEvent
+from app.models.customers import Client
+from app.models.models import DataStoreFile
+from app.models.models import DataStorePath
+from app.models.models import IocAssetLink
+from app.models.models import Notes
+from app.models.models import NotesGroup
+from app.models.models import NotesGroupLink
+from app.models.models import UserActivity
+from app.models.alerts import AlertCaseAssociation
+from app.models.comments import Comments, IocComments, AssetComments
 from app.models.authorization import CaseAccessLevel
 from app.models.authorization import GroupCaseAccess
 from app.models.authorization import OrganisationCaseAccess
 from app.models.authorization import User
-from app.models import UserActivity
 from app.models.authorization import UserCaseAccess
 from app.models.authorization import UserCaseEffectiveAccess
-from app.models.cases import CaseProtagonist, CaseTags, CaseState
-from app.schema.marshables import CaseDetailsSchema
+from app.models.iocs import Ioc
+from app.models.cases import CaseProtagonist
+from app.models.cases import CaseTags
+from app.models.cases import CaseState
+from app.models.pagination_parameters import PaginationParameters
+from app.datamgmt.case.case_rfiles_db import delete_evidences_comments_in_case
+from app.datamgmt.case.case_notes_db import delete_notes_comments_in_case
+from app.datamgmt.case.case_tasks_db import delete_tasks_comments_in_case
+from app.datamgmt.case.case_events_db import delete_events_comments_in_case
 
 
 def list_cases_id():
@@ -66,7 +80,6 @@ def list_cases_id():
 
 
 def list_cases_dict_unrestricted():
-
     owner_alias = aliased(User)
     user_alias = aliased(User)
 
@@ -125,11 +138,14 @@ def list_cases_dict(user_id):
         CaseState.state_name,
         UserCaseEffectiveAccess.access_level
     ).join(
-        UserCaseEffectiveAccess.case,
-        Cases.client,
+        UserCaseEffectiveAccess.case
+    ).join(
+        Cases.client
+    ).join(
         Cases.user
     ).outerjoin(
-        Cases.classification,
+        Cases.classification
+    ).outerjoin(
         Cases.state
     ).join(
         user_alias, and_(Cases.user_id == user_alias.id)
@@ -143,7 +159,7 @@ def list_cases_dict(user_id):
 
     data = []
     for row in res:
-        if row.access_level & CaseAccessLevel.deny_all.value == CaseAccessLevel.deny_all.value:
+        if has_deny_all_access_level(row):
             continue
 
         row = row._asdict()
@@ -182,7 +198,6 @@ def close_case(case_id):
 
 
 def map_alert_resolution_to_case_status(case_status_id):
-
     if case_status_id == CaseStatus.false_positive.value:
         ares = search_alert_resolution_by_name('False Positive', exact_match=True)
 
@@ -191,6 +206,12 @@ def map_alert_resolution_to_case_status(case_status_id):
 
     elif case_status_id == CaseStatus.true_positive_without_impact.value:
         ares = search_alert_resolution_by_name('True Positive Without Impact', exact_match=True)
+
+    elif case_status_id == CaseStatus.legitimate.value:
+        ares = search_alert_resolution_by_name('Legitimate', exact_match=True)
+
+    elif case_status_id == CaseStatus.unknown.value:
+        ares = search_alert_resolution_by_name('Unknown', exact_match=True)
 
     else:
         ares = search_alert_resolution_by_name('Not Applicable', exact_match=True)
@@ -274,7 +295,8 @@ def get_case_details_rt(case_id):
         ).join(
             Cases.client,
         ).outerjoin(
-            Cases.classification,
+            Cases.classification
+        ).outerjoin(
             Cases.state
         ).first()
 
@@ -294,14 +316,98 @@ def get_case_details_rt(case_id):
     return res
 
 
+def _delete_iocs(case_identifier):
+    # TODO should do this with the 2.0 SQLAlchemy API
+    # TODO maybe this can be performed automatically with cascades
+    com_ids = IocComments.query.with_entities(
+        IocComments.comment_id
+    ).join(
+        Ioc
+    ).filter(
+        IocComments.comment_ioc_id == Ioc.ioc_id,
+        Ioc.case_id == case_identifier
+    ).all()
+
+    com_ids = [c.comment_id for c in com_ids]
+    IocComments.query.filter(IocComments.comment_id.in_(com_ids)).delete()
+
+    Comments.query.filter(
+        Comments.comment_id.in_(com_ids)
+    ).delete()
+    Ioc.query.filter(Ioc.case_id == case_identifier).delete()
+
+
+def _delete_assets(case_identifier):
+    com_ids = AssetComments.query.with_entities(
+        AssetComments.comment_id
+    ).join(CaseAssets).filter(
+        AssetComments.comment_asset_id == CaseAssets.asset_id,
+        CaseAssets.case_id == case_identifier
+    ).all()
+
+    com_ids = [c.comment_id for c in com_ids]
+    AssetComments.query.filter(AssetComments.comment_id.in_(com_ids)).delete()
+    Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
+
+    CaseAssetsAlias = aliased(CaseAssets)
+
+    # Query for CaseAssets that are not referenced in alerts and match the case_id
+    assets_to_delete = db.session.query(CaseAssets).filter(
+        and_(
+            CaseAssets.case_id == case_identifier,
+            ~db.session.query(alert_assets_association).filter(
+                alert_assets_association.c.asset_id == CaseAssetsAlias.asset_id
+            ).exists()
+        )
+    )
+    # Delete the assets
+    assets_to_delete.delete(synchronize_session='fetch')
+
+
+def _delete_evidences(case_identifier):
+    delete_evidences_comments_in_case(case_identifier)
+    CaseReceivedFile.query.filter(CaseReceivedFile.case_id == case_identifier).delete()
+
+
+def _delete_notes(case_identifier):
+    delete_notes_comments_in_case(case_identifier)
+    # Legacy code
+    NotesGroupLink.query.filter(NotesGroupLink.case_id == case_identifier).delete()
+    NotesGroup.query.filter(NotesGroup.group_case_id == case_identifier).delete()
+    NoteRevisions.query.filter(
+        and_(
+            Notes.note_case_id == case_identifier,
+            NoteRevisions.note_id == Notes.note_id
+        )
+    ).delete()
+    Notes.query.filter(Notes.note_case_id == case_identifier).delete()
+    NoteDirectory.query.filter(NoteDirectory.case_id == case_identifier).delete()
+
+
+def _delete_tasks(case_identifier):
+    delete_tasks_comments_in_case(case_identifier)
+    tasks = CaseTasks.query.filter(CaseTasks.task_case_id == case_identifier).all()
+    for task in tasks:
+        TaskAssignee.query.filter(TaskAssignee.task_id == task.id).delete()
+        CaseTasks.query.filter(CaseTasks.id == task.id).delete()
+
+
+def _delete_events(case_identifier):
+    delete_events_comments_in_case(case_identifier)
+    da = CasesEvent.query.with_entities(CasesEvent.event_id).filter(CasesEvent.case_id == case_identifier).all()
+    for event in da:
+        CaseEventCategory.query.filter(CaseEventCategory.event_id == event.event_id).delete()
+    CasesEvent.query.filter(CasesEvent.case_id == case_identifier).delete()
+
+
 def delete_case(case_id):
     if not Cases.query.filter(Cases.case_id == case_id).first():
         return False
 
     delete_case_states(caseid=case_id)
     UserActivity.query.filter(UserActivity.case_id == case_id).delete()
-    CaseReceivedFile.query.filter(CaseReceivedFile.case_id == case_id).delete()
-    IocLink.query.filter(IocLink.case_id == case_id).delete()
+    _delete_evidences(case_id)
+    _delete_iocs(case_id)
 
     CaseTags.query.filter(CaseTags.case_id == case_id).delete()
     CaseProtagonist.query.filter(CaseProtagonist.case_id == case_id).delete()
@@ -327,20 +433,7 @@ def delete_case(case_id):
     CaseEventsAssets.query.filter(CaseEventsAssets.case_id == case_id).delete()
     CaseEventsIoc.query.filter(CaseEventsIoc.case_id == case_id).delete()
 
-    CaseAssetsAlias = aliased(CaseAssets)
-
-    # Query for CaseAssets that are not referenced in alerts and match the case_id
-    assets_to_delete = db.session.query(CaseAssets).filter(
-        and_(
-            CaseAssets.case_id == case_id,
-            ~db.session.query(alert_assets_association).filter(
-                alert_assets_association.c.asset_id == CaseAssetsAlias.asset_id
-            ).exists()
-        )
-    )
-
-    # Delete the assets
-    assets_to_delete.delete(synchronize_session='fetch')
+    _delete_assets(case_id)
 
     # Get all alerts associated with assets in the case
     alerts_to_update = db.session.query(CaseAssets).filter(CaseAssets.case_id == case_id)
@@ -349,20 +442,10 @@ def delete_case(case_id):
     alerts_to_update.update({CaseAssets.case_id: None}, synchronize_session='fetch')
     db.session.commit()
 
-    NotesGroupLink.query.filter(NotesGroupLink.case_id == case_id).delete()
-    NotesGroup.query.filter(NotesGroup.group_case_id == case_id).delete()
-    Notes.query.filter(Notes.note_case_id == case_id).delete()
+    _delete_notes(case_id)
+    _delete_tasks(case_id)
 
-    tasks = CaseTasks.query.filter(CaseTasks.task_case_id == case_id).all()
-    for task in tasks:
-        TaskAssignee.query.filter(TaskAssignee.task_id == task.id).delete()
-        CaseTasks.query.filter(CaseTasks.id == task.id).delete()
-
-    da = CasesEvent.query.with_entities(CasesEvent.event_id).filter(CasesEvent.case_id == case_id).all()
-    for event in da:
-        CaseEventCategory.query.filter(CaseEventCategory.event_id == event.event_id).delete()
-
-    CasesEvent.query.filter(CasesEvent.case_id == case_id).delete()
+    _delete_events(case_id)
 
     UserCaseAccess.query.filter(UserCaseAccess.case_id == case_id).delete()
     UserCaseEffectiveAccess.query.filter(UserCaseEffectiveAccess.case_id == case_id).delete()
@@ -373,3 +456,132 @@ def delete_case(case_id):
     db.session.commit()
 
     return True
+
+
+# TODO is it really necessary to have both case_name and search_value
+#      as of now, it seems case_name does a case.name.ilike, whereas search_value does a case.name.like
+def build_filter_case_query(current_user_id,
+                            start_open_date: str = None,
+                            end_open_date: str = None,
+                            case_customer_id: int = None,
+                            case_ids: list = None,
+                            case_name: str = None,
+                            case_description: str = None,
+                            case_classification_id: int = None,
+                            case_owner_id: int = None,
+                            case_opening_user_id: int = None,
+                            case_severity_id: int = None,
+                            case_state_id: int = None,
+                            case_soc_id: str = None,
+                            case_tags: str = None,
+                            case_open_since: int = None,
+                            search_value=None,
+                            sort_by=None,
+                            sort_dir='asc',
+                            is_open: bool=None
+                            ):
+    """
+    Get a list of cases from the database, filtered by the given parameters
+    """
+    conditions = []
+    if start_open_date is not None and end_open_date is not None:
+        conditions.append(Cases.open_date.between(start_open_date, end_open_date))
+
+    if case_customer_id is not None:
+        conditions.append(Cases.client_id == case_customer_id)
+
+    if case_ids is not None:
+        conditions.append(Cases.case_id.in_(case_ids))
+
+    if case_name is not None:
+        conditions.append(Cases.name.ilike(f'%{case_name}%'))
+
+    if case_description is not None:
+        conditions.append(Cases.description.ilike(f'%{case_description}%'))
+
+    if case_classification_id is not None:
+        conditions.append(Cases.classification_id == case_classification_id)
+
+    if case_owner_id is not None:
+        conditions.append(Cases.owner_id == case_owner_id)
+
+    if case_opening_user_id is not None:
+        conditions.append(Cases.user_id == case_opening_user_id)
+
+    if case_severity_id is not None:
+        conditions.append(Cases.severity_id == case_severity_id)
+
+    if case_state_id is not None:
+        conditions.append(Cases.state_id == case_state_id)
+
+    if case_soc_id is not None:
+        conditions.append(Cases.soc_id == case_soc_id)
+
+    if search_value is not None:
+        conditions.append(Cases.name.like(f"%{search_value}%"))
+
+    if case_open_since is not None:
+        result = date.today() - timedelta(case_open_since)
+        conditions.append(Cases.open_date == result)
+
+    if is_open is not None:
+
+        if is_open:
+            conditions.append(Cases.close_date.is_(None))
+        else:
+            conditions.append(Cases.close_date.is_not(None))
+
+    if len(conditions) > 1:
+        conditions = [reduce(and_, conditions)]
+    conditions.append(Cases.case_id.in_(user_list_cases_view(current_user_id)))
+    query = Cases.query.filter(*conditions)
+
+    if case_tags is not None:
+        return query.join(Tags, Tags.tag_title.ilike(f'%{case_tags}%')).filter(CaseTags.case_id == Cases.case_id)
+
+    if sort_by is not None:
+        order_func = convert_sort_direction(sort_dir)
+
+        if sort_by == 'owner':
+            query = query.join(User, Cases.owner_id == User.id).order_by(order_func(User.name))
+
+        elif sort_by == 'opened_by':
+            query = query.join(User, Cases.user_id == User.id).order_by(order_func(User.name))
+
+        elif sort_by == 'customer_name':
+            query = query.join(Client, Cases.client_id == Client.client_id).order_by(order_func(Client.name))
+
+        elif sort_by == 'state':
+            query = query.join(CaseState, Cases.state_id == CaseState.state_id).order_by(order_func(CaseState.state_name))
+
+        elif hasattr(Cases, sort_by):
+            query = query.order_by(order_func(getattr(Cases, sort_by)))
+    return query
+
+
+def get_filtered_cases(current_user_id,
+                       pagination_parameters: PaginationParameters,
+                       start_open_date: str = None,
+                       end_open_date: str = None,
+                       case_customer_id: int = None,
+                       case_ids: list = None,
+                       case_name: str = None,
+                       case_description: str = None,
+                       case_classification_id: int = None,
+                       case_owner_id: int = None,
+                       case_opening_user_id: int = None,
+                       case_severity_id: int = None,
+                       case_state_id: int = None,
+                       case_soc_id: str = None,
+                       case_open_since: int = None,
+                       search_value=None,
+                       is_open: bool = None
+                       ):
+    data = build_filter_case_query(case_classification_id=case_classification_id, case_customer_id=case_customer_id, case_description=case_description,
+                                   case_ids=case_ids, case_name=case_name, case_opening_user_id=case_opening_user_id, case_owner_id=case_owner_id,
+                                   case_severity_id=case_severity_id, case_soc_id=case_soc_id, case_open_since=case_open_since,
+                                   case_state_id=case_state_id, current_user_id=current_user_id, end_open_date=end_open_date,
+                                   search_value=search_value, start_open_date=start_open_date, is_open=is_open,
+                                   sort_by=pagination_parameters.get_order_by(), sort_dir=pagination_parameters.get_direction())
+
+    return data.paginate(page=pagination_parameters.get_page(), per_page=pagination_parameters.get_per_page(), error_out=False)

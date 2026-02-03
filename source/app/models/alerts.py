@@ -1,8 +1,27 @@
+#  IRIS Source Code
+#  Copyright (C) 2024 - DFIR-IRIS
+#  contact@dfir-iris.org
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU Lesser General Public
+#  License as published by the Free Software Foundation; either
+#  version 3 of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  Lesser General Public License for more details.
+#
+#  You should have received a copy of the GNU Lesser General Public License
+#  along with this program; if not, write to the Free Software Foundation,
+#  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 from datetime import datetime
 
 import uuid
 from sqlalchemy.dialects.postgresql import JSON
-from sqlalchemy import BigInteger, Table, Boolean
+from sqlalchemy import BigInteger
+from sqlalchemy import String
 from sqlalchemy import Column
 from sqlalchemy import DateTime
 from sqlalchemy import ForeignKey
@@ -10,11 +29,11 @@ from sqlalchemy import Integer
 from sqlalchemy import Text
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import UUID
-from sqlalchemy.orm import relationship, backref
+from sqlalchemy.orm import relationship
 
-from app import db
-from app.models import Base, alert_assets_association, alert_iocs_association
-from app.models.cases import Cases
+from app.db import db
+from app.models.assets import alert_assets_association
+from app.models.iocs import alert_iocs_association
 
 
 class AlertCaseAssociation(db.Model):
@@ -45,7 +64,7 @@ class Alert(db.Model):
     alert_tags = Column(Text)
     alert_owner_id = Column(ForeignKey('user.id'))
     modification_history = Column(JSON)
-    alert_customer_id = Column(ForeignKey('client.client_id'), nullable=False)
+    alert_customer_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'), nullable=False)
     alert_classification_id = Column(ForeignKey('case_classification.id'))
     alert_resolution_status_id = Column(ForeignKey('alert_resolution_status.resolution_status_id'), nullable=True)
 
@@ -91,7 +110,7 @@ class SimilarAlertsCache(db.Model):
     __tablename__ = 'similar_alerts_cache'
 
     id = Column(BigInteger, primary_key=True)
-    customer_id = Column(BigInteger, ForeignKey('client.client_id'), nullable=False)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'), nullable=False)
     asset_name = Column(Text, nullable=True)
     ioc_value = Column(Text, nullable=True)
     alert_id = Column(BigInteger, ForeignKey('alerts.alert_id'), nullable=False)
@@ -114,3 +133,19 @@ class SimilarAlertsCache(db.Model):
         self.asset_type_id = asset_type_id
         self.ioc_type_id = ioc_type_id
         self.created_at = created_at if created_at else datetime.utcnow()
+
+
+class AlertSimilarity(db.Model):
+    __tablename__ = 'alert_similarity'
+
+    id = Column(BigInteger, primary_key=True)
+    alert_id = Column(BigInteger, ForeignKey('alerts.alert_id'), nullable=False)
+    similar_alert_id = Column(BigInteger, ForeignKey('alerts.alert_id'), nullable=False)
+    similarity_type = Column(String(255), nullable=True)
+    matching_asset_id = Column(BigInteger, ForeignKey('case_assets.asset_id'), nullable=True)
+    matching_ioc_id = Column(BigInteger, ForeignKey('ioc.ioc_id'), nullable=True)
+
+    alert = relationship("Alert", foreign_keys=[alert_id])
+    similar_alert = relationship("Alert", foreign_keys=[similar_alert_id])
+    matching_asset = relationship("CaseAssets")
+    matching_ioc = relationship("Ioc")

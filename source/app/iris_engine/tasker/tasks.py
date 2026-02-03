@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -18,14 +16,12 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-# IMPORTS ------------------------------------------------
 import os
 import urllib.parse
 from celery.signals import task_prerun
-from flask_login import current_user
 
-from app import app
-from app import db
+from app.db import db
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.case.case_db import get_case
 from app.iris_engine.module_handler.module_handler import pipeline_dispatcher
 from app.iris_engine.utils.common import build_upload_path
@@ -33,10 +29,7 @@ from app.iris_engine.utils.tracker import track_activity
 from iris_interface import IrisInterfaceStatus as IStatus
 from iris_interface.IrisModuleInterface import IrisPipelineTypes
 
-app.config['timezone'] = 'Europe/Paris'
 
-
-# CONTENT ------------------------------------------------
 @task_prerun.connect
 def on_task_init(*args, **kwargs):
     db.engine.dispose()
@@ -66,21 +59,21 @@ def task_case_update(module, pipeline, pipeline_args, caseid):
                 task_args = {
                     "pipeline_args": pipeline_args,
                     "db_name": '',
-                    "user": current_user.name,
-                    "user_id": current_user.id,
+                    "user": iris_current_user.name,
+                    "user_id": iris_current_user.id,
                     "case_name": case.name,
                     "case_id": case.case_id,
                     "path": fpath,
                     "is_update": True
                 }
 
-                track_activity("started a new analysis import with pipeline {}".format(pipeline))
+                track_activity(f'started a new analysis import with pipeline {pipeline}')
 
                 pipeline_dispatcher.delay(module_name=module,
                                           hook_name=IrisPipelineTypes.pipeline_type_update,
                                           pipeline_type=IrisPipelineTypes.pipeline_type_update,
                                           pipeline_data=task_args,
-                                          init_user=current_user.name,
+                                          init_user=iris_current_user.name,
                                           caseid=caseid)
 
                 return IStatus.I2Success('Pipeline task queued')
@@ -89,11 +82,10 @@ def task_case_update(module, pipeline, pipeline_args, caseid):
 
         return IStatus.I2UnexpectedResult("Unable to build path")
 
-    else:
-        # The user do not have any context so we cannot update
-        # Return an error
-        errors.append('Current user does not have a valid case in context')
-        return IStatus.I2UnexpectedResult("Invalid context")
+    # The user do not have any context so we cannot update
+    # Return an error
+    errors.append('Current user does not have a valid case in context')
+    return IStatus.I2UnexpectedResult("Invalid context")
 
 
 def chunks(lst, n):

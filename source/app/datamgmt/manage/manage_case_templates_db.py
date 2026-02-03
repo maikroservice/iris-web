@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  contact@dfir-iris.org
 #
@@ -16,19 +14,26 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-from datetime import datetime
-from typing import List, Optional, Union
 
 import marshmallow
+from datetime import datetime
+from typing import List
+from typing import Optional
+from typing import Union
 
-from app import db
-from app.datamgmt.case.case_notes_db import add_note_group, add_note
+from app.datamgmt.db_operations import db_create
+from app.db import db
 from app.datamgmt.case.case_tasks_db import add_task
 from app.datamgmt.manage.manage_case_classifications_db import get_case_classification_by_name
 from app.iris_engine.module_handler.module_handler import call_modules_hook
-from app.models import CaseTemplate, Cases, Tags, NotesGroup
+from app.models.cases import Cases
+from app.models.models import CaseTemplate
+from app.models.models import Tags
+from app.models.models import NoteDirectory
 from app.models.authorization import User
-from app.schema.marshables import CaseSchema, CaseTaskSchema, CaseGroupNoteSchema, CaseAddNoteSchema
+from app.schema.marshables import CaseTaskSchema
+from app.schema.marshables import CaseNoteDirectorySchema
+from app.schema.marshables import CaseNoteSchema
 
 
 def get_case_templates_list() -> List[dict]:
@@ -56,7 +61,7 @@ def get_case_templates_list() -> List[dict]:
     return c_cl
 
 
-def get_case_template_by_id(cur_id: int) -> CaseTemplate:
+def get_case_template_by_id(cur_id: int) -> Optional[CaseTemplate]:
     """Get a case template
 
     Args:
@@ -65,8 +70,7 @@ def get_case_template_by_id(cur_id: int) -> CaseTemplate:
     Returns:
         CaseTemplate: Case template
     """
-    case_template = CaseTemplate.query.filter_by(id=cur_id).first()
-    return case_template
+    return CaseTemplate.query.filter_by(id=cur_id).first()
 
 
 def delete_case_template_by_id(case_template_id: int):
@@ -129,17 +133,20 @@ def validate_case_template(data: dict, update: bool = False) -> Optional[str]:
 
         # We check that note groups, if any, are a list of dictionaries with mandatory keys
         if "note_groups" in data:
-            if not isinstance(data["note_groups"], list):
-                return "Note groups must be a list."
-            for note_group in data["note_groups"]:
-                if not isinstance(note_group, dict):
-                    return "Each note group must be a dictionary."
-                if "title" not in note_group:
-                    return "Each note group must have a 'title' field."
-                if "notes" in note_group:
-                    if not isinstance(note_group["notes"], list):
+            return "Note groups has been replaced by note_directories."
+
+        if "note_directories" in data:
+            if not isinstance(data["note_directories"], list):
+                return "Note directories must be a list."
+            for note_dir in data["note_directories"]:
+                if not isinstance(note_dir, dict):
+                    return "Each note directory must be a dictionary."
+                if "title" not in note_dir:
+                    return "Each note directory must have a 'title' field."
+                if "notes" in note_dir:
+                    if not isinstance(note_dir["notes"], list):
                         return "Notes must be a list."
-                    for note in note_group["notes"]:
+                    for note in note_dir["notes"]:
                         if not isinstance(note, dict):
                             return "Each note must be a dictionary."
                         if "title" not in note:
@@ -151,7 +158,7 @@ def validate_case_template(data: dict, update: bool = False) -> Optional[str]:
         return str(e)
 
 
-def case_template_pre_modifier(case_schema: CaseSchema, case_template_id: str):
+def case_template_pre_modifier(case_schema: Cases, case_template_id: str):
     case_template = get_case_template_by_id(int(case_template_id))
     if not case_template:
         return None
@@ -166,8 +173,8 @@ def case_template_pre_modifier(case_schema: CaseSchema, case_template_id: str):
 
 
 def case_template_populate_tasks(case: Cases, case_template: CaseTemplate):
+    tasks = []
     logs = []
-    # Update case tasks
     for task_template in case_template.tasks:
         try:
             # validate before saving
@@ -176,63 +183,61 @@ def case_template_populate_tasks(case: Cases, case_template: CaseTemplate):
             # Remap case task template fields
             # Set status to "To Do" which is ID 1
             mapped_task_template = {
-                "task_title": task_template['title'],
-                "task_description": task_template['description'] if task_template.get('description') else "",
-                "task_tags": ",".join(tag for tag in task_template["tags"]) if task_template.get('tags') else "",
-                "task_status_id": 1
+                'task_title': task_template['title'],
+                'task_description': task_template['description'] if task_template.get('description') else '',
+                'task_tags': ','.join(tag for tag in task_template['tags']) if task_template.get('tags') else '',
+                'task_status_id': 1
             }
 
-            mapped_task_template = call_modules_hook('on_preload_task_create', data=mapped_task_template, caseid=case.case_id)
+            mapped_task_template = call_modules_hook('on_preload_task_create', mapped_task_template, caseid=case.case_id)
 
             task = task_schema.load(mapped_task_template)
-
-            assignee_id_list = []
-
-            ctask = add_task(task=task,
-                             assignee_id_list=assignee_id_list,
-                             user_id=case.user_id,
-                             caseid=case.case_id
-                             )
-
-            ctask = call_modules_hook('on_postload_task_create', data=ctask, caseid=case.case_id)
-
-            if not ctask:
-                logs.append("Unable to create task for internal reasons")
-
+            tasks.append(task)
         except marshmallow.exceptions.ValidationError as e:
             logs.append(e.messages)
+
+    # Update case tasks
+    for task in tasks:
+        ctask = add_task(task=task, assignee_id_list=[], user_id=case.user_id, caseid=case.case_id)
+
+        ctask = call_modules_hook('on_postload_task_create', ctask, caseid=case.case_id)
+
+        if not ctask:
+            logs.append('Unable to create task for internal reasons')
 
     return logs
 
 
-def case_template_populate_notes(case: Cases, note_group_template: dict, ng: NotesGroup):
+def case_template_populate_notes(case: Cases, note_dir_template: dict, ng: NoteDirectory):
     logs = []
-    if note_group_template.get("notes"):
-        for note_template in note_group_template["notes"]:
+    if note_dir_template.get("notes"):
+        for note_template in note_dir_template["notes"]:
             # validate before saving
-            note_schema = CaseAddNoteSchema()
+            note_schema = CaseNoteSchema()
 
             mapped_note_template = {
-                "group_id": ng.group_id,
+                "directory_id": ng.id,
                 "note_title": note_template["title"],
                 "note_content": note_template["content"] if note_template.get("content") else ""
             }
 
-            mapped_note_template = call_modules_hook('on_preload_note_create', data=mapped_note_template, caseid=case.case_id)
+            mapped_note_template = call_modules_hook('on_preload_note_create',
+                                                     mapped_note_template,
+                                                     caseid=case.case_id)
 
-            note_schema.verify_group_id(mapped_note_template, caseid=ng.group_case_id)
+            note_schema.verify_directory_id(mapped_note_template, caseid=ng.case_id)
             note = note_schema.load(mapped_note_template)
 
-            cnote = add_note(note.get('note_title'),
-                             datetime.utcnow(),
-                             case.user_id,
-                             case.case_id,
-                             note.get('group_id'),
-                             note_content=note.get('note_content'))
+            note.note_creationdate = datetime.utcnow()
+            note.note_lastupdate = datetime.utcnow()
+            note.note_user = case.user_id
+            note.note_case_id = case.case_id
 
-            cnote = call_modules_hook('on_postload_note_create', data=cnote, caseid=case.case_id)
+            db.session.add(note)
 
-            if not cnote:
+            note = call_modules_hook('on_postload_note_create', note, caseid=case.case_id)
+
+            if not note:
                 logs.append("Unable to add note for internal reasons")
                 break
     return logs
@@ -241,29 +246,30 @@ def case_template_populate_notes(case: Cases, note_group_template: dict, ng: Not
 def case_template_populate_note_groups(case: Cases, case_template: CaseTemplate):
     logs = []
     # Update case tasks
-    for note_group_template in case_template.note_groups:
+    if case_template.note_directories:
+        case_template.note_directories = case_template.note_directories
+
+    for note_dir_template in case_template.note_directories:
         try:
             # validate before saving
-            note_group_schema = CaseGroupNoteSchema()
+            note_dir_schema = CaseNoteDirectorySchema()
 
             # Remap case task template fields
             # Set status to "To Do" which is ID 1
-            mapped_note_group_template = {
-                "group_title": note_group_template['title']
+            mapped_note_dir_template = {
+                "name": note_dir_template['title'],
+                "parent_id": None,
+                "case_id": case.case_id
             }
 
-            note_group = note_group_schema.load(mapped_note_group_template)
+            note_dir = note_dir_schema.load(mapped_note_dir_template)
+            db_create(note_dir)
 
-            ng = add_note_group(group_title=note_group.group_title,
-                                caseid=case.case_id,
-                                userid=case.user_id,
-                                creationdate=datetime.utcnow())
-
-            if not ng:
+            if not note_dir:
                 logs.append("Unable to add note group for internal reasons")
                 break
 
-            logs = case_template_populate_notes(case, note_group_template, ng)
+            logs = case_template_populate_notes(case, note_dir_template, note_dir)
 
         except marshmallow.exceptions.ValidationError as e:
             logs.append(e.messages)
@@ -275,11 +281,11 @@ def case_template_post_modifier(case: Cases, case_template_id: Union[str, int]):
     case_template = get_case_template_by_id(int(case_template_id))
     logs = []
     if not case_template:
-        logs.append(f"Case template {case_template_id} not found")
+        logs.append(f'Case template {case_template_id} not found')
         return None, logs
 
     # Update summary, we want to append in order not to skip the initial case description
-    case.description += "\n" + case_template.summary
+    case.description += '\n' + case_template.summary
 
     # Update case tags
     for tag_str in case_template.tags:

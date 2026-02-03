@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  DFIR IRIS
 #  contact@dfir-iris.org
@@ -17,22 +15,24 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 import random
 import string
 
-from flask_login import current_user
-
 from app import app
 from app import bc
-from app import db
+from app.business.customers import customers_get_by_name, customers_create
+from app.datamgmt.case.case_db import case_db_save
+from app.db import db
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.manage.manage_groups_db import add_case_access_to_group
 from app.datamgmt.manage.manage_users_db import add_user_to_group
 from app.datamgmt.manage.manage_users_db import add_user_to_organisation
 from app.datamgmt.manage.manage_users_db import user_exists
 from app.iris_engine.access_control.utils import ac_add_users_multi_effective_access
-from app.models import Cases
-from app.models import Client
-from app.models import get_or_create
+from app.models.cases import Cases
+from app.models.errors import ObjectNotFoundError
+from app.models.customers import Client
 from app.models.authorization import CaseAccessLevel
 from app.models.authorization import User
 
@@ -46,7 +46,7 @@ def protect_demo_mode_user(user):
     users_p = [f'user_std_{i}' for i in range(1, int(app.config.get('DEMO_USERS_COUNT', 10)))]
     users_p += [f'adm_{i}' for i in range(1, int(app.config.get('DEMO_ADM_COUNT', 4)))]
 
-    if current_user.id != 1 and user.id == 1:
+    if iris_current_user.id != 1 and user.id == 1:
         return True
 
     if user.user in users_p:
@@ -59,7 +59,7 @@ def protect_demo_mode_group(group):
     if app.config.get('DEMO_MODE_ENABLED') != 'True':
         return False
 
-    if current_user.id != 1 and group.group_id in [1, 2]:
+    if iris_current_user.id != 1 and group.group_id in [1, 2]:
         return True
 
     return False
@@ -138,14 +138,20 @@ def create_demo_users(def_org, gadm, ganalystes, users_count, seed_user, adm_cou
     return users
 
 
+def safe_create_customer(name, description):
+    try:
+        return customers_get_by_name(name)
+    except ObjectNotFoundError:
+        customer = Client(name=name, description=description)
+        customers_create(customer)
+        return customer
+
+
 def create_demo_cases(users_data: dict = None, cases_count: int = 0, clients_count: int = 0):
 
     clients = []
     for client_index in range(0, clients_count):
-        client = get_or_create(db.session,
-                      Client,
-                      name=f'Client {client_index}',
-                      description=f'Description for client {client_index}')
+        client = safe_create_customer(f'Client {client_index}', f'Description for client {client_index}')
         clients.append(client.client_id)
 
     cases_list = []
@@ -158,17 +164,15 @@ def create_demo_cases(users_data: dict = None, cases_count: int = 0, clients_cou
             name=f"Unrestricted Case {case_index}",
             description="This is a demonstration of an unrestricted case",
             soc_id=f"SOC-{case_index}",
-            gen_report=False,
             user=random.choice(users_data['users']),
             client_id=random.choice(clients)
         )
 
-        case.validate_on_build()
-        case.save()
+        case_db_save(case)
 
         db.session.commit()
         cases_list.append(case.case_id)
-        log.info('Added unrestricted case {}'.format(case.name))
+        log.info(f'Added unrestricted case {case.name}')
 
     log.info('Setting permissions for unrestricted cases')
     add_case_access_to_group(group=users_data['ganalystes'],
@@ -188,7 +192,7 @@ def create_demo_cases(users_data: dict = None, cases_count: int = 0, clients_cou
                                         access_level=CaseAccessLevel.full_access.value)
 
     cases_list = []
-    for case_index in range(0, int(cases_count/2)):
+    for case_index in range(0, int(cases_count / 2)):
         if demo_case_exists(f"Restricted Case {case_index}", f"SOC-RSTRCT-{case_index}") is not None:
             log.info(f'Restricted case {case_index} already exists')
             continue
@@ -200,12 +204,11 @@ def create_demo_cases(users_data: dict = None, cases_count: int = 0, clients_cou
             user=random.choice(users_data['admins']),
             client_id=random.choice(clients)
         )
-        case.validate_on_build()
-        case.save()
+        case_db_save(case)
 
         db.session.commit()
         cases_list.append(case.case_id)
-        log.info('Added restricted case {}'.format(case.name))
+        log.info(f'Added restricted case {case.name}')
 
     add_case_access_to_group(group=users_data['ganalystes'],
                              cases_list=cases_list,
@@ -214,7 +217,6 @@ def create_demo_cases(users_data: dict = None, cases_count: int = 0, clients_cou
     ac_add_users_multi_effective_access(users_list=[u.id for u in users_data['users']],
                                         cases_list=cases_list,
                                         access_level=CaseAccessLevel.deny_all.value)
-
 
     add_case_access_to_group(group=users_data['gadm'],
                              cases_list=cases_list,

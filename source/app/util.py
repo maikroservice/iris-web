@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2022 - DFIR IRIS Team
 #  contact@dfir-iris.org
@@ -19,187 +17,20 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+# TODO should probably dispatch the methods provided in this file in the different namespaces
 import base64
 import datetime
-import decimal
-import hashlib
-import logging as log
-import marshmallow
-import pickle
-import random
 import shutil
-import string
-import traceback
-import uuid
 import weakref
-from flask_socketio import Namespace
-from functools import wraps
-from pathlib import Path
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives import hmac
-from cryptography.exceptions import InvalidSignature
-
-import jwt
-import requests
-from flask import Request
-import json
-from flask import render_template
-from flask import request
-from flask import session
-from flask import url_for
-from flask_login import current_user
-from flask_login import login_user
-from flask_wtf import FlaskForm
-from jwt import PyJWKClient
-from pyunpack import Archive
-from requests.auth import HTTPBasicAuth
-from sqlalchemy.ext.declarative import DeclarativeMeta
 from sqlalchemy.orm.attributes import flag_modified
-from werkzeug.utils import redirect
+from flask import current_app
 
-from app import TEMPLATE_PATH, socket_io
-from app import app
-from app import db
-from app.datamgmt.case.case_db import case_exists
-from app.datamgmt.case.case_db import get_case
-from app.datamgmt.manage.manage_users_db import get_user
-from app.iris_engine.access_control.utils import ac_fast_check_user_has_case_access
-from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
-from app.iris_engine.utils.tracker import track_activity
-from app.models import Cases
-from app.models.authorization import CaseAccessLevel
-
-
-def response(msg, data):
-    rsp = {
-        "status": "success",
-        "message": msg,
-        "data": data if data is not None else []
-    }
-    return app.response_class(response=json.dumps(rsp, cls=AlchemyEncoder),
-                              status=200,
-                              mimetype='application/json')
-
-
-def response_error(msg, data=None, status=400):
-    rsp = {
-        "status": "error",
-        "message": msg,
-        "data": data if data is not None else []
-    }
-    return app.response_class(response=json.dumps(rsp, cls=AlchemyEncoder),
-                              status=status,
-                              mimetype='application/json')
-
-
-def response_success(msg='', data=None):
-    rsp = {
-        "status": "success",
-        "message": msg,
-        "data": data if data is not None else []
-    }
-    return app.response_class(response=json.dumps(rsp, cls=AlchemyEncoder),
-                              status=200,
-                              mimetype='application/json')
-
-
-def g_db_commit():
-    db.session.commit()
-
-
-def g_db_add(obj):
-    if obj:
-        db.session.add(obj)
-
-
-def g_db_del(obj):
-    if obj:
-        db.session.delete(obj)
-
-
-class PgEncoder(json.JSONEncoder):
-
-    def default(self, o):
-        if isinstance(o, datetime.datetime):
-            return DictDatetime(o)
-
-        if isinstance(o, decimal.Decimal):
-            return str(o)
-
-        return json.JSONEncoder.default(self, o)
-
-
-class AlchemyEncoder(json.JSONEncoder):
-
-    def default(self, obj):
-        if isinstance(obj.__class__, DeclarativeMeta):
-            # an SQLAlchemy class
-            fields = {}
-            for field in [x for x in dir(obj) if not x.startswith('_') and x != 'metadata'
-                                                 and x != 'query' and x != 'query_class']:
-                data = obj.__getattribute__(field)
-                try:
-                    json.dumps(data)  # this will fail on non-encodable values, like other classes
-                    fields[field] = data
-                except TypeError:
-                    fields[field] = None
-            # a json-encodable dict
-            return fields
-
-        if isinstance(obj, decimal.Decimal):
-            return str(obj)
-
-        if isinstance(obj, datetime.datetime) or isinstance(obj, datetime.date):
-            return obj.isoformat()
-
-        if isinstance(obj, uuid.UUID):
-            return str(obj)
-
-        else:
-            if obj.__class__ == bytes:
-                try:
-                    return pickle.load(obj)
-                except Exception:
-                    return str(obj)
-
-        return json.JSONEncoder.default(self, obj)
-
-
-def DictDatetime(t):
-    dl = ['Y', 'm', 'd', 'H', 'M', 'S', 'f']
-    if type(t) is datetime.datetime:
-        return {a: t.strftime('%{}'.format(a)) for a in dl}
-    elif type(t) is dict:
-        return datetime.datetime.strptime(''.join(t[a] for a in dl), '%Y%m%d%H%M%S%f')
-
-
-def AlchemyFnCode(obj):
-    """JSON encoder function for SQLAlchemy special classes."""
-    if isinstance(obj, datetime.date):
-        return obj.isoformat()
-    elif isinstance(obj, decimal.Decimal):
-        return float(obj)
-
-
-def return_task(success, user, initial, logs, data, case_name, imported_files):
-    ret = {
-        'success': success,
-        'user': user,
-        'initial': initial,
-        'logs': logs,
-        'data': data,
-        'case_name': case_name,
-        'imported_files': imported_files
-    }
-    return ret
-
-
-def task_success(user=None, initial=None, logs=None, data=None, case_name=None, imported_files=None):
-    return return_task(True, user, initial, logs, data, case_name, imported_files)
-
-
-def task_failure(user=None, initial=None, logs=None, data=None, case_name=None, imported_files=None):
-    return return_task(False, user, initial, logs, data, case_name, imported_files)
+from app.db import db
+from app.blueprints.iris_user import iris_current_user
 
 
 class FileRemover(object):
@@ -723,27 +554,31 @@ def get_random_suffix(length):
 
 
 def add_obj_history_entry(obj, action, commit=False):
+    date_update = datetime.datetime.now(datetime.timezone.utc)
+    timestamp = date_update.timestamp()
+    utc = date_update
+
     if hasattr(obj, 'modification_history'):
-
         if isinstance(obj.modification_history, dict):
-
             obj.modification_history.update({
-                datetime.datetime.now().timestamp(): {
-                    'user': current_user.user,
-                    'user_id': current_user.id,
+                timestamp: {
+                    'user': iris_current_user.user,
+                    'user_id': iris_current_user.id,
                     'action': action
                 }
             })
-
         else:
-
             obj.modification_history = {
-                datetime.datetime.now().timestamp(): {
-                    'user': current_user.user,
-                    'user_id': current_user.id,
+                timestamp: {
+                    'user': iris_current_user.user,
+                    'user_id': iris_current_user.id,
                     'action': action
                 }
             }
+
+    if hasattr(obj, 'date_update'):
+        obj.date_update = utc
+
     flag_modified(obj, "modification_history")
     if commit:
         db.session.commit()
@@ -751,42 +586,8 @@ def add_obj_history_entry(obj, action, commit=False):
     return obj
 
 
-# Set basic 404
-@app.errorhandler(404)
-def page_not_found(e):
-    # note that we set the 404 status explicitly
-    if request.content_type and 'application/json' in request.content_type:
-        return response_error("Resource not found", status=404)
-
-    return render_template('pages/error-404.html', template_folder=TEMPLATE_PATH), 404
-
-
-def file_sha256sum(file_path):
-
-    if not Path(file_path).is_file():
-        return None
-
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        # Read and update hash string value in blocks of 4K
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-
-        return sha256_hash.hexdigest().upper()
-
-
-def stream_sha256sum(stream):
-
-    return hashlib.sha256(stream).hexdigest().upper()
-
-
-@app.template_filter()
-def format_datetime(value, frmt):
-    return datetime.datetime.fromtimestamp(float(value)).strftime(frmt)
-
-
 def hmac_sign(data):
-    key = bytes(app.config.get("SECRET_KEY"), "utf-8")
+    key = bytes(current_app.config.get("SECRET_KEY"), "utf-8")
     h = hmac.HMAC(key, hashes.SHA256())
     h.update(data)
     signature = base64.b64encode(h.finalize())
@@ -796,7 +597,7 @@ def hmac_sign(data):
 
 def hmac_verify(signature_enc, data):
     signature = base64.b64decode(signature_enc)
-    key = bytes(app.config.get("SECRET_KEY"), "utf-8")
+    key = bytes(current_app.config.get("SECRET_KEY"), "utf-8")
     h = hmac.HMAC(key, hashes.SHA256())
     h.update(data)
 
@@ -805,40 +606,3 @@ def hmac_verify(signature_enc, data):
         return True
     except InvalidSignature:
         return False
-
-
-def str_to_bool(value):
-    if value is None:
-        return False
-
-    if isinstance(value, bool):
-        return value
-
-    if isinstance(value, int):
-        return bool(value)
-
-    return value.lower() in ['true', '1', 'yes', 'y', 't']
-
-
-def assert_type_mml(input_var: any, field_name: str,  type: type, allow_none: bool = False):
-    if input_var is None:
-        if allow_none is False:
-            raise marshmallow.ValidationError("Invalid data - non null expected",
-                                            field_name=field_name if field_name else "type")
-        else:
-            return True
-    
-    if isinstance(input_var, type):
-        return True
-    
-    try:
-
-        if isinstance(type(input_var), type):
-            return True
-
-    except Exception as e:
-        log.error(e)
-        print(e)
-        
-    raise marshmallow.ValidationError("Invalid data type",
-                                      field_name=field_name if field_name else "type")

@@ -17,7 +17,7 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 
-FROM nginx:1.21.3
+FROM nginx:1.27
 
 RUN apt-get update && apt-get install -y curl
 
@@ -41,8 +41,6 @@ RUN touch /var/log/nginx/audit_platform_access.log && chown -R www-data:www-data
 RUN touch /var/run/nginx.pid && chown -R www-data:www-data /var/run/nginx.pid /var/cache/nginx /etc/nginx/nginx.conf
 
 RUN mkdir -p /www/certs/
-
-USER www-data
 
 HEALTHCHECK --interval=5s --timeout=3s CMD curl --fail -k https://127.0.0.1:${INTERFACE_HTTPS_PORT:-443} || exit 1
 

@@ -23,13 +23,22 @@
 
 target=${1-:app}
 
-printf "Running ${target} ...\n"
-
-if [[ "${target}" == iris-worker ]] ; then
-    celery -A app.celery worker -E -B -l INFO &
-else
-    gunicorn app:app --worker-class eventlet --bind 0.0.0.0:8000 --timeout 180 --worker-connections 1000 --log-level=info &
+if [[ -z $LOG_LEVEL ]]; then
+  LOG_LEVEL='info'
 fi
 
-while true; do sleep 2; done
+printf "Running ${target} ...\n"
 
+trap 'pkill "^(celery|gunicorn)"; exit 0' TERM INT
+
+if [[ "${target}" == iris-worker ]] ; then
+    if [[ -z $NUMBER_OF_CHILD ]]; then
+        celery -A app.celery worker -E -B -l $LOG_LEVEL &
+    else
+        celery -A app.celery worker -c $NUMBER_OF_CHILD -E -B -l $LOG_LEVEL &
+    fi
+else
+    gunicorn app:app --bind 0.0.0.0:8000 --timeout 180 --worker-connections 1000 --threads 100 -w 1 --log-level=info &
+fi
+
+while :; do tail -f /dev/null & wait $!; done

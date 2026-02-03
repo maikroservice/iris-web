@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  contact@dfir-iris.org
 #
@@ -37,7 +35,7 @@ log = app.logger
 
 def _get_unique_identifier(user_login):
     if app.config.get('LDAP_AUTHENTICATION_TYPE').lower() == 'ntlm':
-        return user_login[user_login.find('\\')+1:]
+        return user_login[user_login.find('\\') + 1:]
     return user_login
 
 
@@ -85,7 +83,7 @@ def ldap_authenticate(ldap_user_name, ldap_user_pwd):
     """
     if app.config.get('LDAP_AUTHENTICATION_TYPE').lower() != 'ntlm':
         ldap_user_name = conv.escape_filter_chars(ldap_user_name)
-        ldap_user = f"{app.config.get('LDAP_USER_PREFIX')}{ldap_user_name.strip()}{ ','+app.config.get('LDAP_USER_SUFFIX') if app.config.get('LDAP_USER_SUFFIX') else ''}"
+        ldap_user = f"{app.config.get('LDAP_USER_PREFIX')}{ldap_user_name.strip()}{ ',' + app.config.get('LDAP_USER_SUFFIX') if app.config.get('LDAP_USER_SUFFIX') else ''}"
     else:
         ldap_user = f"{ldap_user_name.strip()}"
 
@@ -128,6 +126,6 @@ def ldap_authenticate(ldap_user_name, ldap_user_pwd):
     except Exception as e:
         raise Exception(e.__str__())
 
-    log.info(f"Successful authenticated user")
+    log.info("Successful authenticated user")
 
     return True

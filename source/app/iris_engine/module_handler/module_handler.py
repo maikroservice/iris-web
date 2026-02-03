@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2022 - DFIR IRIS Team
 #  contact@dfir-iris.org
@@ -19,31 +17,31 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-import traceback
 
+import traceback
 import base64
 import importlib
-from flask_login import current_user
 from packaging import version
 from pickle import dumps
 from pickle import loads
 from sqlalchemy import and_
 
 from app import app
+from app.blueprints.iris_user import iris_current_user
+from app.logger import logger
 from app import celery
-from app import db
+from app.db import db
 from app.datamgmt.iris_engine.modules_db import get_module_config_from_hname
+from app.datamgmt.iris_engine.modules_db import deregister_module_from_hook
 from app.datamgmt.iris_engine.modules_db import iris_module_add
 from app.datamgmt.iris_engine.modules_db import iris_module_exists
 from app.datamgmt.iris_engine.modules_db import modules_list_pipelines
-from app.models import IrisHook
-from app.models import IrisModule
-from app.models import IrisModuleHook
+from app.models.models import IrisHook
+from app.models.models import IrisModule
+from app.models.models import IrisModuleHook
 from app.util import hmac_sign
 from app.util import hmac_verify
 from iris_interface import IrisInterfaceStatus as IStatus
-
-log = app.logger
 
 
 def check_module_compatibility(module_version):
@@ -96,14 +94,14 @@ def check_module_health(module_instance):
 
     def dup_logs(message):
         logs.append(message)
-        log.info(message)
+        logger.info(message)
 
     if not module_instance:
         return False, ['Error - cannot instantiate the module. Check server logs']
 
     try:
-        dup_logs("Testing module")
-        dup_logs("Module name : {}".format(module_instance.get_module_name()))
+        dup_logs('Testing module')
+        dup_logs(f'Module name: {module_instance.get_module_name()}')
 
         if type(module_instance.get_interface_version()) != str:
             mod_interface_version = str(module_instance.get_interface_version())
@@ -113,7 +111,7 @@ def check_module_health(module_instance):
         if not (version.parse(app.config.get('MODULES_INTERFACE_MIN_VERSION'))
                 <= version.parse(mod_interface_version)
                 <= version.parse(app.config.get('MODULES_INTERFACE_MAX_VERSION'))):
-            log.critical("Module interface no compatible with server. Expected "
+            logger.critical('Module interface no compatible with server. Expected '
                          f"{app.config.get('MODULES_INTERFACE_MIN_VERSION')} <= module "
                          f"<= {app.config.get('MODULES_INTERFACE_MAX_VERSION')}")
             logs.append("Module interface no compatible with server. Expected "
@@ -122,23 +120,23 @@ def check_module_health(module_instance):
 
             return False, logs
 
-        dup_logs("Module interface version : {}".format(module_instance.get_interface_version()))
+        dup_logs(f'Module interface version: {module_instance.get_interface_version()}')
 
         module_type = module_instance.get_module_type()
         if module_type not in ["module_pipeline", "module_processor"]:
-            log.critical(f"Unrecognised module type. Expected module_pipeline or module_processor, got {module_type}")
+            logger.critical(f"Unrecognised module type. Expected module_pipeline or module_processor, got {module_type}")
             logs.append(f"Unrecognised module type. Expected module_pipeline or module_processor, got {module_type}")
             return False, logs
 
-        dup_logs("Module type : {}".format(module_instance.get_module_type()))
+        dup_logs(f'Module type: {module_instance.get_module_type()}')
 
         if not module_instance.is_providing_pipeline() and module_type == 'pipeline':
-            log.critical("Module of type pipeline has no pipelines")
+            logger.critical("Module of type pipeline has no pipelines")
             logs.append("Error - Module of type pipeline has not pipelines")
             return False, logs
 
         if module_instance.is_providing_pipeline():
-            dup_logs("Module has pipeline : {}".format(module_instance.is_providing_pipeline()))
+            dup_logs(f'Module has pipeline: {module_instance.is_providing_pipeline()}')
             # Check the pipelines config health
             has_error, llogs = check_pipeline_args(module_instance.pipeline_get_info())
 
@@ -151,8 +149,8 @@ def check_module_health(module_instance):
         return module_instance.is_ready(), logs
 
     except Exception as e:
-        log.exception("Error while checking module health")
-        log.error(e.__str__())
+        logger.exception("Error while checking module health")
+        logger.error(e.__str__())
         logs.append(e.__str__())
         return False, logs
 
@@ -170,16 +168,15 @@ def instantiate_module_from_name(module_name):
             return None
     except Exception as e:
         msg = f"Could not import root module {module_name}: {e}"
-        log.error(msg)
+        logger.error(msg)
         return None, msg
     # The whole concept is based on the fact that the root module provides an __iris_module_interface
     # variable pointing to the interface class with which Iris can talk to
     try:
-        mod_interface = importlib.import_module("{}.{}".format(module_name,
-                                                           mod_root_interface.__iris_module_interface))
+        mod_interface = importlib.import_module(f'{module_name}.{mod_root_interface.__iris_module_interface}')
     except Exception as e:
-        msg = f"Could not import module {module_name}: {e}"
-        log.error(msg)
+        msg = f'Could not import module {module_name}: {e}'
+        logger.error(msg)
         return None, msg
 
     if not mod_interface:
@@ -190,7 +187,7 @@ def instantiate_module_from_name(module_name):
         cl_interface = getattr(mod_interface, mod_root_interface.__iris_module_interface)
     except Exception as e:
         msg = f"Could not get handle on the interface class of module {module_name}: {e}"
-        log.error(msg)
+        logger.error(msg)
         return None, msg
 
     if not cl_interface:
@@ -200,8 +197,8 @@ def instantiate_module_from_name(module_name):
     try:
         mod_inst = cl_interface()
     except Exception as e:
-        msg = f"Could not instantiate the class for module {module_name}: {e}"
-        log.error(msg)
+        msg = f'Could not instantiate the class for module {module_name}: {e}'
+        logger.error(msg)
         return None, msg
 
     return mod_inst, 'Success'
@@ -256,25 +253,25 @@ def register_module(module_name):
     """
 
     if not module_name:
-        log.error("Provided module has no names")
+        logger.error("Provided module has no names")
         return None, "Module has no names"
 
     try:
 
         mod_inst, _ = instantiate_module_from_name(module_name=module_name)
         if not mod_inst:
-            log.error("Module could not be instantiated")
+            logger.error("Module could not be instantiated")
             return None, "Module could not be instantiated"
 
         if iris_module_exists(module_name=module_name):
-            log.warning("Module already exists in Iris")
+            logger.warning("Module already exists in Iris")
             return None, "Module already exists in Iris"
 
         # Auto parse the configuration and fill with default
-        log.info('Parsing configuration')
+        logger.info('Parsing configuration')
         mod_config = preset_init_mod_config(mod_inst.get_init_configuration())
 
-        log.info('Adding module')
+        logger.info('Adding module')
         module = iris_module_add(module_name=module_name,
                                   module_human_name=mod_inst.get_module_name(),
                                   module_description=mod_inst.get_module_description(),
@@ -293,7 +290,7 @@ def register_module(module_name):
             mod_inst.register_hooks(module_id=module.id)
 
     except Exception as e:
-        return None, "Fatal - {}".format(e.__str__())
+        return None, f'Fatal - {e.__str__()}'
 
     return module, "Module registered"
 
@@ -306,20 +303,20 @@ def iris_update_hooks(module_name, module_id):
     """
 
     if not module_name:
-        log.error("Provided module has no names")
+        logger.error("Provided module has no names")
         return False, ["Module has no names"]
 
     try:
-        mod_inst,_ = instantiate_module_from_name(module_name=module_name)
+        mod_inst, _ = instantiate_module_from_name(module_name=module_name)
         if not mod_inst:
-            log.error("Module could not be instantiated")
+            logger.error("Module could not be instantiated")
             return False, ["Module could not be instantiated"]
 
         if mod_inst.get_module_type() == 'module_processor':
             mod_inst.register_hooks(module_id=module_id)
 
     except Exception as e:
-        return False, ["Fatal - {}".format(e.__str__())]
+        return False, [f'Fatal - {e.__str__()}']
 
     return True, ["Module updated"]
 
@@ -388,8 +385,7 @@ def register_hook(module_id: int, iris_hook_name: str, manual_hook_name: str = N
 
         return True, [f"Hook {iris_hook_name} registered"]
 
-    else:
-        return True, [f"Hook {iris_hook_name} already registered"]
+    return True, [f"Hook {iris_hook_name} already registered"]
 
 
 def deregister_from_hook(module_id: int, iris_hook_name: str):
@@ -401,16 +397,9 @@ def deregister_from_hook(module_id: int, iris_hook_name: str):
     :param iris_hook_name: hook_name to deregister from
     :return: IrisInterfaceStatus object
     """
-    log.info(f'Deregistering module #{module_id} from {iris_hook_name}')
-    hooks = IrisModuleHook.query.filter(
-        IrisModuleHook.module_id == module_id,
-        IrisHook.hook_name == iris_hook_name,
-        IrisModuleHook.hook_id == IrisHook.id
-    ).all()
-    if hooks:
-        for hook in hooks:
-            log.info(f'Deregistered module #{module_id} from {iris_hook_name}')
-            db.session.delete(hook)
+    logger.info(f'Deregistering module #{module_id} from {iris_hook_name}')
+    deregister_module_from_hook(module_id, iris_hook_name)
+    logger.info(f'Deregistered module #{module_id} from {iris_hook_name}')
 
     return True, ['Hook deregistered']
 
@@ -419,6 +408,11 @@ def deregister_from_hook(module_id: int, iris_hook_name: str):
 def task_hook_wrapper(self, module_name, hook_name, hook_ui_name, data, init_user, caseid):
     """
     Wrap a hook call into a Celery task to run asynchronously
+
+    note: even if the caseid parameter does not seem very useful, it is used when tasks are retrieved to display the
+          table of "DFIR-IRIS Module Tasks".
+          see endpoint /dim/tasks/list
+          see tests_rest_module_tasks.TestsRestModuleTasks.test_get_module_tasks_should_return_case_identifier
 
     :param self: Task instance
     :param module_name: Module name to instanciate and call
@@ -434,13 +428,13 @@ def task_hook_wrapper(self, module_name, hook_name, hook_ui_name, data, init_use
         signature, pdata = data.encode("utf-8").split(b" ")
         is_verified = hmac_verify(signature, pdata)
         if is_verified is False:
-            log.warning("data argument has not been correctly serialised")
+            logger.warning("data argument has not been correctly serialised")
             raise Exception('Unable to instantiate target module. Data has not been correctly serialised')
 
         deser_data = loads(base64.b64decode(pdata))
 
     except Exception as e:
-        log.exception(e)
+        logger.exception(e)
         raise Exception(e)
 
     try:
@@ -468,10 +462,10 @@ def task_hook_wrapper(self, module_name, hook_name, hook_ui_name, data, init_use
             _obj.append(_obj_a)
 
     except Exception as e:
-        log.exception(e)
+        logger.exception(e)
         raise Exception(e)
 
-    log.info(f'Calling module {module_name} for hook {hook_name}')
+    logger.info(f'Calling module {module_name} for hook {hook_name}')
 
     try:
         mod_inst, _ = instantiate_module_from_name(module_name=module_name)
@@ -487,14 +481,14 @@ def task_hook_wrapper(self, module_name, hook_name, hook_ui_name, data, init_use
 
     except Exception as e:
         msg = f"Failed to run hook {hook_name} with module {module_name}. Error {str(e)}"
-        log.critical(msg)
-        log.exception(e)
+        logger.critical(msg)
+        logger.exception(e)
         task_status = IStatus.I2Error(message=msg, logs=[traceback.format_exc()], user=init_user, caseid=caseid)
 
     return task_status
 
 
-def call_modules_hook(hook_name: str, data: any, caseid: int, hook_ui_name: str = None, module_name: str = None) -> any:
+def call_modules_hook(hook_name: str, data: any, caseid: int = None, hook_ui_name: str = None, module_name: str = None) -> any:
     """
     Calls modules which have registered the specified hook
 
@@ -508,7 +502,7 @@ def call_modules_hook(hook_name: str, data: any, caseid: int, hook_ui_name: str 
     """
     hook = IrisHook.query.filter(IrisHook.hook_name == hook_name).first()
     if not hook:
-        log.critical(f'Hook name {hook_name} not found')
+        logger.critical(f'Hook name {hook_name} not found')
         raise Exception(f'Hook name {hook_name} not found')
 
     if hook_ui_name:
@@ -534,24 +528,23 @@ def call_modules_hook(hook_name: str, data: any, caseid: int, hook_ui_name: str 
         IrisModule.module_name,
         IrisModuleHook.manual_hook_ui_name
     ).filter(condition).join(
-        IrisModuleHook.module,
-        IrisModuleHook.hook
+        IrisModule, IrisModuleHook.module_id == IrisModule.id
     ).all()
 
     for module in modules:
         if module.run_asynchronously and "on_preload_" not in hook_name:
-            log.info(f'Calling module {module.module_name} asynchronously for hook {hook_name} :: {hook_ui_name}')
+            logger.info(f'Calling module {module.module_name} asynchronously for hook {hook_name} :: {hook_ui_name}')
             # We cannot directly pass the sqlalchemy in data, as it needs to be serializable
             # So pass a dumped instance and then rebuild on the task side
             ser_data = base64.b64encode(dumps(data))
             ser_data_auth = hmac_sign(ser_data) + b" " + ser_data
             task_hook_wrapper.delay(module_name=module.module_name, hook_name=hook_name,
                                     hook_ui_name=module.manual_hook_ui_name, data=ser_data_auth.decode("utf8"),
-                                    init_user=current_user.name, caseid=caseid)
+                                    init_user=iris_current_user.name, caseid=caseid)
 
         else:
             # Direct call. Should be fast
-            log.info(f'Calling module {module.module_name} for hook {hook_name}')
+            logger.info(f'Calling module {module.module_name} for hook {hook_name}')
 
             try:
                 was_list = True
@@ -567,14 +560,14 @@ def call_modules_hook(hook_name: str, data: any, caseid: int, hook_ui_name: str 
                 status = mod_inst.hooks_handler(hook_name, module.manual_hook_ui_name, data=data_list)
 
             except Exception as e:
-                log.critical(f"Failed to run hook {hook_name} with module {module.module_name}. Error {str(e)}")
+                logger.critical(f"Failed to run hook {hook_name} with module {module.module_name}. Error {str(e)}")
                 continue
 
             if status.is_success():
                 data_result = status.get_data()
                 if not was_list:
                     if not isinstance(data_result, list):
-                        log.critical(f"Error getting data result from hook {hook_name}: "
+                        logger.critical(f"Error getting data result from hook {hook_name}: "
                                      f"A list is expected, instead got a {type(data_result)}")
                         continue
                     else:
@@ -584,6 +577,12 @@ def call_modules_hook(hook_name: str, data: any, caseid: int, hook_ui_name: str 
                     data = data_result
 
     return data
+
+
+def call_deprecated_on_preload_modules_hook(hook_name: str, data: any, case_identifier=None) -> any:
+    hook_name = f'on_preload_{hook_name}'
+    logger.warning(f'DEPRECATION WARNING: Hook {hook_name} has been deprecated and will be removed in a future version')
+    return call_modules_hook(hook_name, data, caseid=case_identifier)
 
 
 def list_available_pipelines():
@@ -615,4 +614,4 @@ def pipeline_dispatcher(self, module_name, hook_name, pipeline_type, pipeline_da
         return mod.pipeline_handler(pipeline_type=pipeline_type,
                                     pipeline_data=pipeline_data)
 
-    return IStatus.I2InterfaceNotImplemented("Couldn't instantiate module {}".format(module_name))
+    return IStatus.I2InterfaceNotImplemented(f'Couldn\'t instantiate module {module_name}')

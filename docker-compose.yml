@@ -15,35 +15,28 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-version: "3.5"
 services:
   rabbitmq:
-      image: rabbitmq:3-management-alpine
-      container_name: iriswebapp_rabbitmq
-      networks:
-        - iris_backend
+    extends:
+      file: docker-compose.base.yml
+      service: rabbitmq
+    restart: always
+
 
   db:
-    build:
-      context: docker/db
-    container_name: iriswebapp_db
-    image: iriswebapp_db:v2.3.3
+    extends:
+      file: docker-compose.base.yml
+      service: db
+    image: ${DB_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_db}:${DB_IMAGE_TAG:-v2.4.20}
+    build: docker/db/
     restart: always
-    # Used for debugging purposes, should be deleted for production
-    ports:
-      - "127.0.0.1:5432:5432"
-    environment:
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD
-      - POSTGRES_ADMIN_USER
-      - POSTGRES_ADMIN_PASSWORD
-      - POSTGRES_DB
-    networks:
-      - iris_backend
-    volumes:
-      - db_data:/var/lib/postgresql/data
+
 
   app:
+    extends:
+      file: docker-compose.base.yml
+      service: app
+    image: ${APP_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_app}:${APP_IMAGE_TAG:-v2.4.20}
     build:
       context: .
       dockerfile: docker/webApp/Dockerfile
@@ -60,29 +53,13 @@ services:
       - user_templates:/home/iris/user_templates
       - server_data:/home/iris/server_data
     restart: always
-    depends_on:
-      - "rabbitmq"
-      - "db"
-    # Used for debugging purposes, should be deleted for production
-    ports:
-      - "127.0.0.1:8000:8000"
-    env_file:
-      - .env
-    environment:
-      - POSTGRES_USER
-      - POSTGRES_PASSWORD
-      - POSTGRES_ADMIN_USER
-      - POSTGRES_ADMIN_PASSWORD
-      - POSTGRES_SERVER
-      - POSTGRES_PORT
-      - DOCKERIZED
-      - IRIS_SECRET_KEY
-      - IRIS_SECURITY_PASSWORD_SALT
-    networks:
-      - iris_backend
-      - iris_frontend
+
 
   worker:
+    extends:
+      file: docker-compose.base.yml
+      service: worker
+    image: ${APP_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_app}:${APP_IMAGE_TAG:-v2.4.20}
     build:
       context: .
       dockerfile: docker/webApp/Dockerfile
@@ -118,30 +95,17 @@ services:
       - iris_backend
 
   nginx:
+    extends:
+      file: docker-compose.base.yml
+      service: nginx
+    image: ${NGINX_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_nginx}:${NGINX_IMAGE_TAG:-v2.4.20}
     build:
-      context: ./docker/nginx
+      context: docker/nginx/
       args:
         NGINX_CONF_GID: 1234
         NGINX_CONF_FILE: nginx.conf
-    image: iriswebapp_nginx:v2.3.3
-    container_name: iriswebapp_nginx
-    environment:
-      - IRIS_UPSTREAM_SERVER
-      - IRIS_UPSTREAM_PORT
-      - INTERFACE_HTTPS_PORT
-      - SERVER_NAME
-      - CERT_FILENAME
-      - KEY_FILENAME
-      - IRIS_AUTHENTICATION_TYPE
-    networks:
-      - iris_frontend
-    ports:
-      - "${INTERFACE_HTTPS_PORT:-443}:${INTERFACE_HTTPS_PORT:-443}"
-    volumes:
-      - "./certificates/web_certificates/:/www/certs/:ro"
-    restart: on-failure:5
-    depends_on:
-      - "app"
+    restart: always
+
 
 volumes:
   iris-downloads:
@@ -154,3 +118,4 @@ networks:
     name: iris_backend
   iris_frontend:
     name: iris_frontend
+

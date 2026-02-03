@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  contact@dfir-iris.org
 #
@@ -16,22 +14,23 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-from flask_login import current_user
 from sqlalchemy import and_
 
-from app import db
+from app.datamgmt.db_operations import db_delete
+from app.db import db
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.case.case_db import get_case
 from app.datamgmt.manage.manage_cases_db import list_cases_id
-from app.iris_engine.access_control.utils import ac_access_level_mask_from_val_list, ac_ldp_group_removal
+from app.iris_engine.access_control.utils import ac_ldp_group_removal
 from app.iris_engine.access_control.utils import ac_access_level_to_list
 from app.iris_engine.access_control.utils import ac_auto_update_user_effective_access
 from app.iris_engine.access_control.utils import ac_permission_to_list
-from app.models import Cases
+from app.models.cases import Cases
 from app.models.authorization import Group
+from app.models.authorization import ac_access_level_mask_from_val_list
 from app.models.authorization import GroupCaseAccess
 from app.models.authorization import User
 from app.models.authorization import UserGroup
-from app.schema.marshables import AuthorizationGroupSchema
 
 
 def get_groups_list():
@@ -40,9 +39,11 @@ def get_groups_list():
     return groups
 
 
-def get_groups_list_hr_perms():
-    groups = get_groups_list()
+def update_group():
+    db.session.commit()
 
+
+def get_users_by_group_identifiers():
     get_membership_list = UserGroup.query.with_entities(
         UserGroup.group_id,
         User.user,
@@ -50,28 +51,21 @@ def get_groups_list_hr_perms():
         User.name
     ).join(UserGroup.user).all()
 
-    membership_list = {}
+    result = {}
     for member in get_membership_list:
-        if member.group_id not in membership_list:
-            membership_list[member.group_id] = [{
+        if member.group_id not in result:
+            result[member.group_id] = [{
                 'user': member.user,
                 'name': member.name,
                 'id': member.id
             }]
         else:
-            membership_list[member.group_id].append({
+            result[member.group_id].append({
                 'user': member.user,
                 'name': member.name,
                 'id': member.id
             })
-
-    groups = AuthorizationGroupSchema().dump(groups, many=True)
-    for group in groups:
-        perms = ac_permission_to_list(group['group_permissions'])
-        group['group_permissions_list'] = perms
-        group['group_members'] = membership_list.get(group['group_id'], [])
-
-    return groups
+    return result
 
 
 def get_group(group_id):
@@ -179,7 +173,7 @@ def update_group_members(group, members):
         ac_auto_update_user_effective_access(uid)
 
     for uid in users_to_remove:
-        if current_user.id == uid and ac_ldp_group_removal(uid, group.group_id):
+        if iris_current_user.id == uid and ac_ldp_group_removal(uid, group.group_id):
             continue
 
         UserGroup.query.filter(
@@ -209,14 +203,10 @@ def remove_user_from_group(group, member):
 
 
 def delete_group(group):
-    if not group:
-        return None
-
     UserGroup.query.filter(UserGroup.group_id == group.group_id).delete()
     GroupCaseAccess.query.filter(GroupCaseAccess.group_id == group.group_id).delete()
 
-    db.session.delete(group)
-    db.session.commit()
+    db_delete(group)
 
 
 def add_case_access_to_group(group, cases_list, access_level):

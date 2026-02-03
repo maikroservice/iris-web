@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -19,29 +17,42 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import datetime
+from typing import Optional
 
-from flask_login import current_user
 from sqlalchemy import and_
 from sqlalchemy import func
+from flask_sqlalchemy.pagination import Pagination
 
-from app import db, app
+from app.datamgmt.db_operations import db_create
+from app.datamgmt.db_operations import db_delete
+from app.db import db
+from app.logger import logger
+from app.datamgmt.filtering import get_filtered_data
 from app.datamgmt.states import update_assets_state
-from app.models import AnalysisStatus, CaseStatus
-from app.models import AssetComments
-from app.models import AssetsType
-from app.models import CaseAssets
-from app.models import CaseEventsAssets
-from app.models import Cases
-from app.models import Comments
-from app.models import CompromiseStatus
-from app.models import Ioc
-from app.models import IocAssetLink
-from app.models import IocLink
-from app.models import IocType
+from app.models.models import CaseEventsAssets
+from app.models.cases import Cases
+from app.models.cases import CaseStatus
+from app.models.comments import Comments
+from app.models.comments import AssetComments
+from app.models.assets import CompromiseStatus
+from app.models.assets import AssetsType
+from app.models.assets import CaseAssets
+from app.models.assets import AnalysisStatus
+from app.models.iocs import Ioc
+from app.models.models import IocAssetLink
+from app.models.models import IocType
 from app.models.authorization import User
+from app.models.pagination_parameters import PaginationParameters
 
 
-log = app.logger
+relationship_model_map = {
+    'case': Cases,
+    'user': User,
+    'asset_type': AssetsType,
+    'analysis_status': AnalysisStatus,
+    'iocs': Ioc
+}
+
 
 def create_asset(asset, caseid, user_id):
 
@@ -58,7 +69,18 @@ def create_asset(asset, caseid, user_id):
     return asset
 
 
-def get_assets(caseid):
+def case_assets_db_exists(asset: CaseAssets):
+    assets = CaseAssets.query.filter(
+        func.lower(CaseAssets.asset_name) == func.lower(asset.asset_name),
+        CaseAssets.asset_type_id == asset.asset_type_id,
+        CaseAssets.asset_id != asset.asset_id,
+        CaseAssets.case_id == asset.case_id
+    )
+
+    return assets.first() is not None
+
+
+def get_assets(case_identifier):
     assets = CaseAssets.query.with_entities(
         CaseAssets.asset_id,
         CaseAssets.asset_uuid,
@@ -75,9 +97,34 @@ def get_assets(caseid):
         CaseAssets.analysis_status_id,
         CaseAssets.asset_tags
     ).filter(
-        CaseAssets.case_id == caseid,
+        CaseAssets.case_id == case_identifier,
     ).join(
-        CaseAssets.asset_type, CaseAssets.analysis_status
+        CaseAssets.asset_type
+    ).join(
+        CaseAssets.analysis_status
+    ).all()
+    return assets
+
+
+def get_assets_by_case(case_identifier):
+    return CaseAssets.query.with_entities(
+        CaseEventsAssets.event_id,
+        CaseAssets.asset_name
+    ).join(
+        CaseEventsAssets.asset
+    ).filter(
+        CaseEventsAssets.case_id == case_identifier
+    ).all()
+
+
+def filter_assets(case_identifier, pagination_parameters: PaginationParameters, request_parameters: dict) -> Pagination:
+    base_filter = CaseAssets.case_id == case_identifier
+    return get_filtered_data(CaseAssets, base_filter, pagination_parameters, request_parameters, relationship_model_map)
+
+
+def get_raw_assets(caseid):
+    assets = CaseAssets.query.filter(
+        CaseAssets.case_id == caseid
     ).all()
 
     return assets
@@ -93,10 +140,9 @@ def get_assets_name(caseid):
     return assets_names
 
 
-def get_asset(asset_id, caseid):
+def get_asset(asset_id) -> Optional[CaseAssets]:
     asset = CaseAssets.query.filter(
         CaseAssets.asset_id == asset_id,
-        CaseAssets.case_id == caseid
     ).first()
 
     return asset
@@ -104,7 +150,7 @@ def get_asset(asset_id, caseid):
 
 def update_asset(asset_name, asset_description, asset_ip, asset_info, asset_domain,
                  asset_compromise_status_id, asset_type, asset_id, caseid, analysis_status, asset_tags):
-    asset = get_asset(asset_id, caseid)
+    asset = get_asset(asset_id)
     asset.asset_name = asset_name
     asset.asset_description = asset_description
     asset.asset_ip = asset_ip
@@ -120,60 +166,33 @@ def update_asset(asset_name, asset_description, asset_ip, asset_info, asset_doma
     db.session.commit()
 
 
-def delete_asset(asset_id, caseid):
-    case_asset = get_asset(asset_id, caseid)
-    if case_asset is None:
-        return
+def delete_asset(asset: CaseAssets):
+    delete_ioc_asset_link(asset.asset_id)
 
-    if case_asset.case_id and case_asset.alerts is not None:
+    # Delete the relevant records from the CaseEventsAssets table
+    CaseEventsAssets.query.filter(
+        asset.asset_id == CaseEventsAssets.asset_id
+    ).delete()
 
-        CaseEventsAssets.query.filter(
-            case_asset.asset_id == CaseEventsAssets.asset_id
-        ).delete()
+    # Delete the relevant records from the AssetComments table
+    com_ids = AssetComments.query.with_entities(
+        AssetComments.comment_id
+    ).filter(
+        AssetComments.comment_asset_id == asset.asset_id
+    ).all()
 
-        case_asset.case_id = None
-        db.session.commit()
-        return
+    com_ids = [c.comment_id for c in com_ids]
+    AssetComments.query.filter(AssetComments.comment_id.in_(com_ids)).delete()
 
-    with db.session.begin_nested():
-        delete_ioc_asset_link(asset_id)
+    Comments.query.filter(
+        Comments.comment_id.in_(com_ids)
+    ).delete()
 
-        # Delete the relevant records from the CaseEventsAssets table
-        CaseEventsAssets.query.filter(
-            CaseEventsAssets.case_id == caseid,
-            CaseEventsAssets.asset_id == asset_id
-        ).delete()
+    db.session.delete(asset)
 
-        # Delete the relevant records from the AssetComments table
-        com_ids = AssetComments.query.with_entities(
-            AssetComments.comment_id
-        ).filter(
-            AssetComments.comment_asset_id == asset_id,
-        ).all()
+    update_assets_state(asset.case_id)
 
-        com_ids = [c.comment_id for c in com_ids]
-        AssetComments.query.filter(AssetComments.comment_id.in_(com_ids)).delete()
-
-        Comments.query.filter(
-            Comments.comment_id.in_(com_ids)
-        ).delete()
-
-        # Directly delete the relevant records from the CaseAssets table
-        CaseAssets.query.filter(
-            CaseAssets.asset_id == asset_id,
-            CaseAssets.case_id == caseid
-        ).delete()
-
-        update_assets_state(caseid=caseid)
-
-
-def get_assets_types():
-    assets_types = [(c.asset_id, c.asset_name) for c
-                    in AssetsType.query.with_entities(AssetsType.asset_name,
-                                                      AssetsType.asset_id).order_by(AssetsType.asset_name)
-                    ]
-
-    return assets_types
+    db.session.commit()
 
 
 def get_unspecified_analysis_status_id():
@@ -208,16 +227,6 @@ def get_case_outcome_status_dict():
     return [{'value': e.value, 'name': e.name.replace('_', ' ').capitalize()} for e in CaseStatus]
 
 
-def get_asset_type_id(asset_type_name):
-    assets_type_id = AssetsType.query.with_entities(
-        AssetsType.asset_id
-    ).filter(
-        func.lower(AssetsType.asset_name) == asset_type_name
-    ).first()
-
-    return assets_type_id
-
-
 def get_assets_ioc_links(caseid):
 
     ioc_links_req = IocAssetLink.query.with_entities(
@@ -226,11 +235,11 @@ def get_assets_ioc_links(caseid):
         IocAssetLink.asset_id
     ).filter(
         Ioc.ioc_id == IocAssetLink.ioc_id,
-        IocLink.case_id == caseid,
-        IocLink.ioc_id == Ioc.ioc_id
+        Ioc.case_id == caseid
     ).all()
 
     return ioc_links_req
+
 
 def get_similar_assets(asset_name, asset_type_id, caseid, customer_id, cases_limitation):
 
@@ -259,24 +268,15 @@ def delete_ioc_asset_link(asset_id):
     ).delete()
 
 
-def get_linked_iocs_from_asset(asset_id):
-    iocs = IocAssetLink.query.with_entities(
-        Ioc.ioc_id,
-        Ioc.ioc_value
-    ).filter(
-        IocAssetLink.asset_id == asset_id,
-        Ioc.ioc_id == IocAssetLink.ioc_id
-    ).all()
-
-    return iocs
-
-
 def set_ioc_links(ioc_list, asset_id):
     if ioc_list is None:
         return False, "Empty IOC list"
 
     # Reset IOC list
     delete_ioc_asset_link(asset_id)
+
+    # Ensure that each ioc is unique
+    ioc_list = list(set(ioc_list))
 
     for ioc in ioc_list:
         ial = IocAssetLink()
@@ -289,7 +289,7 @@ def set_ioc_links(ioc_list, asset_id):
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        log.exception(e)
+        logger.exception(e)
         return True, e.__str__()
 
     return False, ""
@@ -339,8 +339,7 @@ def add_comment_to_asset(asset_id, comment_id):
     ec.comment_asset_id = asset_id
     ec.comment_id = comment_id
 
-    db.session.add(ec)
-    db.session.commit()
+    db_create(ec)
 
 
 def get_case_assets_comments_count(asset_id):
@@ -355,41 +354,21 @@ def get_case_assets_comments_count(asset_id):
     ).all()
 
 
-def get_case_asset_comment(asset_id, comment_id):
-    return AssetComments.query.filter(
+def get_case_asset_comment(asset_id, comment_id) -> Optional[Comments]:
+    return Comments.query.join(AssetComments.comment).filter(
         AssetComments.comment_asset_id == asset_id,
-        AssetComments.comment_id == comment_id
-    ).with_entities(
-        Comments.comment_id,
-        Comments.comment_text,
-        Comments.comment_date,
-        Comments.comment_update_date,
-        Comments.comment_uuid,
-        User.name,
-        User.user
-    ).join(
-        AssetComments.comment,
-        Comments.user
+        Comments.comment_id == comment_id
     ).first()
 
 
-def delete_asset_comment(asset_id, comment_id, case_id):
-    comment = Comments.query.filter(
-        Comments.comment_id == comment_id,
-        Comments.comment_user_id == current_user.id
-    ).first()
-    if not comment:
-        return False, "You are not allowed to delete this comment"
-
+def delete_asset_comment(asset_id, comment: Comments):
     AssetComments.query.filter(
         AssetComments.comment_asset_id == asset_id,
-        AssetComments.comment_id == comment_id
+        AssetComments.comment_id == comment.comment_id
     ).delete()
 
-    db.session.delete(comment)
-    db.session.commit()
+    db_delete(comment)
 
-    return True, "Comment deleted"
 
 def get_asset_by_name(asset_name, caseid):
     asset = CaseAssets.query.filter(

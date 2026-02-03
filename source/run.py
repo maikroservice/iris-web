@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -30,4 +28,3 @@ if __name__ != '__main__':
 
 if __name__ == "__main__":
     socket_io.run(app, host='127.0.0.1', port=8000, debug=True)
-

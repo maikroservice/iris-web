@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Core Code
 #  contact@dfir-iris.org
 #
@@ -28,20 +26,17 @@ import tempfile
 import time
 from celery.schedules import crontab
 from datetime import datetime
-from flask_login import current_user
-from flask_socketio import emit
-from flask_socketio import join_room
 from packaging import version
 from pathlib import Path
 
 from app import app
 from app import cache
 from app import celery
-from app import db
+from app.db import db
 from app import socket_io
 from app.datamgmt.manage.manage_srv_settings_db import get_server_settings_as_dict
 from app.iris_engine.backup.backup import backup_iris_db
-from app.models import ServerSettings
+from app.models.models import ServerSettings
 from iris_interface import IrisInterfaceStatus as IStatus
 
 log = app.logger
@@ -70,30 +65,6 @@ def update_log(status):
 
 def update_log_error(status):
     update_log_to_socket(status, is_error=True)
-
-
-@socket_io.on('join-update', namespace='/server-updates')
-def get_message(data):
-
-    room = data['channel']
-    join_room(room=room)
-
-    emit('join', {'message': f"{current_user.user} just joined", 'is_error': False}, room=room,
-         namespace='/server-updates')
-
-
-@socket_io.on('update_ping', namespace='/server-updates')
-def socket_on_update_ping(msg):
-
-    emit('update_ping', {'message': f"Server connected", 'is_error': False},
-         namespace='/server-updates')
-
-
-@socket_io.on('update_get_current_version', namespace='/server-updates')
-def socket_on_update_do_reboot(msg):
-
-    socket_io.emit('update_current_version', {"version": app.config.get('IRIS_VERSION')}, to='iris_update_status',
-                   namespace='/server-updates')
 
 
 def notify_server_ready_to_reboot():
@@ -178,10 +149,9 @@ def is_updates_available():
         db.session.commit()
         return True, f'# New version {release_version} available\n\n{release.get("body")}', release
 
-    else:
-        srv_settings.has_updates_available = False
-        db.session.commit()
-        return False, f'**Current server is up-to-date with {release_version}**', None
+    srv_settings.has_updates_available = False
+    db.session.commit()
+    return False, f'**Current server is up-to-date with {release_version}**', None
 
 
 def init_server_update(release_config):
@@ -353,7 +323,7 @@ def call_ext_updater(update_archive, scope, need_reboot):
                           '1' if need_reboot else '0',                      # Do we need to restart the app
                           '&'])
 
-    except Exception as e :
+    except Exception as e:
         log.error(str(e))
         return False
 
@@ -469,11 +439,11 @@ def verify_compatibility(target_directory, release_assets_info):
         return None
 
     if not updates_info.get('support_auto'):
-        update_log_error(f'This updates does not support automatic handling. Please read the upgrades instructions.')
+        update_log_error('This updates does not support automatic handling. Please read the upgrades instructions.')
         return None
 
     if 'worker' not in updates_info.get('scope') and 'iriswebapp' not in updates_info.get('scope'):
-        update_log_error(f'Something is wrong, updates configuration does not have any valid scope')
+        update_log_error('Something is wrong, updates configuration does not have any valid scope')
         update_log_error('Please contact DFIR-IRIS team')
         return None
 

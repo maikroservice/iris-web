@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -21,7 +19,7 @@
 from sqlalchemy import and_
 from sqlalchemy import desc
 
-from app.models import Cases
+from app.models.cases import Cases
 from app.models.authorization import User
 from app.models.models import UserActivity
 
@@ -32,7 +30,7 @@ def get_auto_activities(caseid):
     caseid: the case from which to get activities
     """
     auto_activities = UserActivity.query.with_entities(
-        User.name.label("user_name"),
+        User.name.label('user_name'),
         UserActivity.activity_date,
         UserActivity.activity_desc,
         UserActivity.user_input
@@ -115,7 +113,9 @@ def get_all_users_activities():
         UserActivity.user_input,
         UserActivity.is_from_api
     ).join(
-        UserActivity.case, UserActivity.user
+        UserActivity.case
+    ).join(
+        UserActivity.user
     ).order_by(desc(UserActivity.activity_date)).limit(10000).all()
 
     user_activities += UserActivity.query.with_entities(
@@ -130,3 +130,21 @@ def get_all_users_activities():
     )).order_by(desc(UserActivity.activity_date)).limit(10000).all()
 
     return user_activities
+
+
+def search_users_activity_in_case(case_identifier):
+    ua = UserActivity.query.with_entities(
+        UserActivity.activity_date,
+        User.name,
+        UserActivity.activity_desc,
+        UserActivity.is_from_api
+    ).filter(and_(
+        UserActivity.case_id == case_identifier,
+        UserActivity.display_in_ui == True
+    )).join(
+        UserActivity.user
+    ).order_by(
+        desc(UserActivity.activity_date)
+    ).limit(40).all()
+
+    return [a._asdict() for a in ua]

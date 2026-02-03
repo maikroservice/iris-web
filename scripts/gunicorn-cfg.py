@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -29,4 +27,3 @@ timeout = 3000
 
 def worker_exit(server, worker):
     sys.exit(4)
-

@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -17,12 +15,14 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-import uuid
 
+import enum
+import uuid
 from datetime import datetime
-from flask_login import current_user
-# IMPORTS ------------------------------------------------
-from sqlalchemy import BigInteger, Table
+
+from sqlalchemy import BigInteger
+from sqlalchemy import func
+from sqlalchemy import CheckConstraint
 from sqlalchemy import Boolean
 from sqlalchemy import Column
 from sqlalchemy import Date
@@ -37,15 +37,10 @@ from sqlalchemy.dialects.postgresql import JSON
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
+from sqlalchemy.orm import backref
 
-from app import db
-from app.datamgmt.states import update_assets_state
-from app.datamgmt.states import update_evidences_state
-from app.datamgmt.states import update_ioc_state
-from app.datamgmt.states import update_notes_state
-from app.datamgmt.states import update_tasks_state
-from app.datamgmt.states import update_timeline_state
-from app.models.models import Client, Base
+from app.db import db
+from app.blueprints.iris_user import iris_current_user
 
 
 class Cases(db.Model):
@@ -53,7 +48,7 @@ class Cases(db.Model):
 
     case_id = Column(BigInteger, primary_key=True)
     soc_id = Column(String(256))
-    client_id = Column(ForeignKey('client.client_id'), nullable=False)
+    client_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'), nullable=False)
     name = Column(String(256))
     description = Column(Text)
     open_date = Column(Date)
@@ -70,6 +65,7 @@ class Cases(db.Model):
     classification_id = Column(ForeignKey('case_classification.id'))
     reviewer_id = Column(ForeignKey('user.id'), nullable=True)
     review_status_id = Column(ForeignKey('review_status.id'), nullable=True)
+    severity_id = Column(ForeignKey('severities.severity_id'), nullable=True)
 
     modification_history = Column(JSON)
 
@@ -78,6 +74,7 @@ class Cases(db.Model):
     owner = relationship('User', foreign_keys=[owner_id])
     classification = relationship('CaseClassification')
     reviewer = relationship('User', foreign_keys=[reviewer_id])
+    severity = relationship('Severity')
 
     alerts = relationship('Alert', secondary="alert_case_association", back_populates='cases', viewonly=True)
 
@@ -85,6 +82,7 @@ class Cases(db.Model):
     state = relationship('CaseState', back_populates='cases')
 
     review_status = relationship('ReviewStatus')
+    cases_access = relationship('UserCaseAccess', back_populates='case')
 
     def __init__(self,
                  name=None,
@@ -94,15 +92,16 @@ class Cases(db.Model):
                  user=None,
                  custom_attributes=None,
                  classification_id=None,
-                 state_id=None
+                 state_id=None,
+                 severity_id=None
                  ):
         self.name = name[:200] if name else None,
         self.soc_id = soc_id,
         self.client_id = client_id,
         self.description = description,
-        self.user_id = current_user.id if current_user else user.id
+        self.user_id = iris_current_user.id if iris_current_user else user.id
         self.owner_id = self.user_id
-        self.author = current_user.user if current_user else user.user
+        self.author = iris_current_user.user if iris_current_user else user.user
         self.description = description
         self.open_date = datetime.utcnow()
         self.close_date = None
@@ -111,49 +110,8 @@ class Cases(db.Model):
         self.case_uuid = uuid.uuid4()
         self.status_id = 0
         self.classification_id = classification_id
-        self.state_id = state_id
-
-    def save(self):
-        """
-        Save the current case in database
-        :return:
-        """
-        # Inject self into db
-        db.session.add(self)
-
-        # Commit the changes
-        db.session.commit()
-
-        # Rename case with the ID
-        self.name = "#{id} - {name}".format(id=self.case_id, name=self.name)
-
-        # Create the states
-        update_timeline_state(caseid=self.case_id, userid=self.user_id)
-        update_tasks_state(caseid=self.case_id, userid=self.user_id)
-        update_evidences_state(caseid=self.case_id, userid=self.user_id)
-        update_ioc_state(caseid=self.case_id, userid=self.user_id)
-        update_assets_state(caseid=self.case_id, userid=self.user_id)
-        update_notes_state(caseid=self.case_id, userid=self.user_id)
-
-        db.session.commit()
-
-        return self
-
-    def validate_on_build(self):
-        """
-        Execute an autocheck of the case metadata and validate it
-        :return: True if valid else false; Tuple with errors
-        """
-        # TODO : Check if case name already exists
-
-        res = Client.query\
-            .with_entities(Client.client_id)\
-            .filter(Client.client_id == self.client_id)\
-            .first()
-
-        self.client_id = res[0]
-
-        return True, []
+        self.state_id = state_id,
+        self.severity_id = severity_id
 
 
 class CaseTags(db.Model):
@@ -170,6 +128,7 @@ class CasesEvent(db.Model):
     __tablename__ = "cases_events"
 
     event_id = Column(BigInteger, primary_key=True)
+    parent_event_id = Column(BigInteger, ForeignKey('cases_events.event_id'), nullable=True)
     event_uuid = Column(UUID(as_uuid=True), default=uuid.uuid4, server_default=text("gen_random_uuid()"),
                         nullable=False)
     case_id = Column(ForeignKey('cases.case_id'))
@@ -196,6 +155,11 @@ class CasesEvent(db.Model):
                             primaryjoin="CasesEvent.event_id==CaseEventCategory.event_id",
                             secondaryjoin="CaseEventCategory.category_id==EventCategory.id",
                             viewonly=True)
+    children = relationship("CasesEvent", backref=backref('parent', remote_side=[event_id]))
+
+    __table_args__ = (
+        CheckConstraint('event_id != parent_event_id', name='check_different_ids'),
+    )
 
 
 class CaseState(db.Model):
@@ -221,3 +185,33 @@ class CaseProtagonist(db.Model):
 
     case = relationship('Cases')
     user = relationship('User')
+
+
+class CaseStatus(enum.Enum):
+    unknown = 0x0
+    false_positive = 0x1
+    true_positive_with_impact = 0x2
+    not_applicable = 0x3
+    true_positive_without_impact = 0x4
+    legitimate = 0x5
+
+
+class ReviewStatusList:
+    no_review_required = "No review required"
+    not_reviewed = "Not reviewed"
+    pending_review = "Pending review"
+    review_in_progress = "Review in progress"
+    reviewed = "Reviewed"
+
+
+class CaseClassification(db.Model):
+    __tablename__ = 'case_classification'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(Text)
+    name_expanded = Column(Text)
+    description = Column(Text)
+    creation_date = Column(DateTime, server_default=func.now(), nullable=True)
+    created_by_id = Column(ForeignKey('user.id'), nullable=True)
+
+    created_by = relationship('User')

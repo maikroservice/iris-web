@@ -1,3 +1,4 @@
+{{- if .Values.postgres.enabled }}
 ---    
 # Here I have used a hostpath
 # Local volumes can only be used as a statically created PersistentVolume. Dynamic provisioning is not supported.
@@ -48,33 +49,39 @@ spec:
       labels:
         app: {{ .Values.postgres.app }}
     spec:
+      securityContext:
+        {{- toYaml .Values.postgres.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Values.postgres.name }}
+          securityContext:
+            {{- toYaml .Values.postgres.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.postgres.resources | nindent 12 }}
           image: "{{ .Values.postgres.image}}:{{ .Values.postgres.tag }}"
           imagePullPolicy: "{{ .Values.postgres.imagePullPolicy }}"
 
           env:
-                
-          - name: POSTGRES_DB  # Setting Database name 
+
+          - name: POSTGRES_DB  # Setting Database name
             value: {{ .Values.postgres.POSTGRES_DB | quote }}
 
-          - name: POSTGRES_USER  # Setting Database username 
-            value: {{ .Values.postgres.POSTGRES_ADMIN_USER | quote }}
+          - name: POSTGRES_USER  # Setting Database username
+            value: {{ .Values.postgres.POSTGRES_USER | quote }}
 
-          - name:  POSTGRES_PASSWORDD # Setting Database password 
+          - name:  POSTGRES_PASSWORDD # Setting Database password
             value: {{ .Values.postgres.POSTGRES_PASSWORD | quote }}
 
           - name:  POSTGRES_ADMIN_USER # Setting Database admin user 
             value: {{ .Values.postgres.POSTGRES_ADMIN_USER | quote }}
 
           - name:  POSTGRES_ADMIN_PASSWORD # Setting Database admin password 
-            value: {{ .Values.postgres.POSTGRES_ADMIN_PASSWORD | quote }}    
+            value: {{ .Values.postgres.POSTGRES_ADMIN_PASSWORD | quote }}
 
           - name:  POSTGRES_PORT # Setting Database port
-            value: {{ .Values.postgres.POSTGRES_PORT | quote }}   
+            value: {{ .Values.postgres.POSTGRES_PORT | quote }}
 
           - name: POSTGRES_HOST_AUTH_METHOD
-            value: trust  
+            value: trust
 
           ports:
             - containerPort: 5432
@@ -85,7 +92,7 @@ spec:
       volumes:
         - name: postgredb
           persistentVolumeClaim:
-            claimName: postgres-pv-claim  
+            claimName: postgres-pv-claim
 
 ---
 
@@ -102,3 +109,4 @@ spec:
   selector:
    app: {{ .Values.postgres.app }}
 ---  
+{{- end }}

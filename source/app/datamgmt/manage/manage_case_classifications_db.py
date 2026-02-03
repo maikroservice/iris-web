@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  contact@dfir-iris.org
 #
@@ -19,7 +17,7 @@
 from sqlalchemy import func
 from typing import List
 
-from app.models import CaseClassification
+from app.models.cases import CaseClassification
 
 
 def get_case_classifications_list() -> List[dict]:

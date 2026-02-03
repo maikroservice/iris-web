@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -17,21 +15,43 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-import datetime
+
+from typing import Optional
 
 import binascii
 from sqlalchemy import and_
 
-from app import db
-from app.models import Tags
+from sqlalchemy import exists
+from sqlalchemy import select
+
+from app.db import db
+from app.models.authorization import User
 from app.models.cases import CaseProtagonist
-from app.models.cases import CaseTags
 from app.models.cases import Cases
-from app.models.models import CaseTemplateReport, ReviewStatus
-from app.models.models import Client
+from app.models.models import CaseTemplateReport
+from app.models.models import ReviewStatus
+from app.models.customers import Client
 from app.models.models import Languages
 from app.models.models import ReportType
-from app.models.authorization import User
+from app.datamgmt.manage.manage_tags_db import add_db_tag
+from app.datamgmt.db_operations import db_create
+from app.datamgmt.states import update_assets_state
+from app.datamgmt.states import update_evidences_state
+from app.datamgmt.states import update_ioc_state
+from app.datamgmt.states import update_notes_state
+from app.datamgmt.states import update_tasks_state
+from app.datamgmt.states import update_timeline_state
+
+
+def get_first_case() -> Optional[Cases]:
+    return Cases.query.order_by(Cases.case_id).first()
+
+
+def get_first_case_with_customer(customer_identifier: int) -> Optional[Cases]:
+    case = Cases.query.filter(
+        Cases.client_id == customer_identifier
+    ).first()
+    return case
 
 
 def get_case_summary(caseid):
@@ -43,28 +63,31 @@ def get_case_summary(caseid):
         User.name.label('user'),
         Client.name.label('customer')
     ).join(
-        Cases.user, Cases.client
+        Cases.user
+    ).join(
+        Cases.client
     ).first()
 
     return case_summary
 
 
-def get_case(caseid):
+def get_case(caseid) -> Optional[Cases]:
     return Cases.query.filter(Cases.case_id == caseid).first()
 
 
-def case_exists(caseid):
-    return Cases.query.filter(Cases.case_id == caseid).count()
+def case_db_exists(identifier):
+    stmt = select(exists().where(Cases.case_id == identifier))
+    return db.session.scalar(stmt)
 
 
 def get_case_client_id(caseid):
-    client_id = Cases.query.with_entities(
+    customer = Cases.query.with_entities(
         Client.client_id
     ).filter(
         Cases.case_id == caseid
     ).join(Cases.client).first()
 
-    return client_id.client_id
+    return customer.client_id
 
 
 def case_get_desc(caseid):
@@ -111,11 +134,11 @@ def get_case_report_template():
         CaseTemplateReport.name,
         Languages.name,
         CaseTemplateReport.description
-    ).join(
-        CaseTemplateReport.language,
-        CaseTemplateReport.report_type
-    ).filter(
+    ).filter(and_(
+        Languages.id == CaseTemplateReport.language_id,
         ReportType.name == "Investigation"
+    )).join(
+        CaseTemplateReport.report_type
     ).all()
 
     return reports
@@ -130,11 +153,7 @@ def save_case_tags(tags, case):
     for tag in tags.split(','):
         tag = tag.strip()
         if tag:
-            tg = Tags.query.filter_by(tag_title=tag).first()
-
-            if tg is None:
-                tg = Tags(tag_title=tag)
-                tg.save()
+            tg = add_db_tag(tag)
 
             case.tags.append(tg)
 
@@ -156,11 +175,13 @@ def get_activities_report_template():
         CaseTemplateReport.name,
         Languages.name,
         CaseTemplateReport.description
-    ).join(
-        CaseTemplateReport.language,
+    ).filter(and_(
+        ReportType.name == "Activities",
+        Languages.id == CaseTemplateReport.language_id
+    )).outerjoin(
         CaseTemplateReport.report_type
-    ).filter(
-        ReportType.name == "Activities"
+    ).outerjoin(
+        CaseTemplateReport.language
     ).all()
 
     return reports
@@ -209,3 +230,49 @@ def get_review_id_from_name(review_name):
         return status.id
 
     return None
+
+
+def case_db_save(case: Cases):
+    db_create(case)
+
+    # Rename case with the ID
+    case.name = f'#{case.case_id} - {case.name}'
+
+    # Create the states
+    update_timeline_state(case.case_id, case.user_id)
+    update_tasks_state(case.case_id, case.user_id)
+    update_evidences_state(case.case_id, case.user_id)
+    update_ioc_state(case.case_id, case.user_id)
+    update_assets_state(case.case_id, case.user_id)
+    update_notes_state(case.case_id, case.user_id)
+
+    db.session.commit()
+
+
+def list_user_reviews(user_identifier):
+    ct = Cases.query.with_entities(
+        Cases.case_id,
+        Cases.name,
+        ReviewStatus.status_name,
+        ReviewStatus.id.label('status_id')
+    ).join(
+        Cases.review_status
+    ).filter(
+        Cases.reviewer_id == user_identifier,
+        ReviewStatus.status_name != 'Reviewed',
+        ReviewStatus.status_name != 'Not reviewed'
+    ).all()
+
+    return ct
+
+
+def list_user_cases(user_identifier, show_all=False):
+    if show_all:
+        return Cases.query.filter(
+            Cases.owner_id == user_identifier
+        ).all()
+
+    return Cases.query.filter(
+        Cases.owner_id == user_identifier,
+        Cases.close_date == None
+    ).all()

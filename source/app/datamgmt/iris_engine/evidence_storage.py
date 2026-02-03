@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-#
 #  IRIS Source Code
 #  Copyright (C) 2021 - Airbus CyberSecurity (SAS)
 #  ir@cyberactionlab.net
@@ -19,7 +17,7 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 from app.datamgmt.case.case_rfiles_db import add_rfile
-from app.models import CaseReceivedFile
+from app.models.evidences import CaseReceivedFile
 
 
 class EvidenceStorage(object):
