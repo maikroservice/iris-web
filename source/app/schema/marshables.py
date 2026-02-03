@@ -26,6 +26,7 @@ import re
 import shutil
 import string
 import tempfile
+import uuid
 from flask_login import current_user
 from marshmallow import ValidationError
 from marshmallow import EXCLUDE
@@ -1520,7 +1521,7 @@ class ContactSchema(ma.SQLAlchemyAutoSchema):
     contact_mobile_phone: Optional[str] = auto_field('contact_mobile_phone', required=False, allow_none=False)
     contact_role: Optional[str] = auto_field('contact_role', required=False, allow_none=False)
     contact_note: Optional[str] = auto_field('contact_note', required=False, allow_none=False)
-    client_id: int = auto_field('client_id', required=True)
+    client_id: uuid.UUID = auto_field('client_id', required=True)
 
     class Meta:
         model = Contact
@@ -1628,7 +1629,7 @@ class CaseSchema(ma.SQLAlchemyAutoSchema):
     case_name: str = auto_field('name', required=True, validate=Length(min=2), allow_none=False)
     case_description: str = auto_field('description', required=True, validate=Length(min=2))
     case_soc_id: int = auto_field('soc_id', required=True)
-    case_customer: int = auto_field('client_id', required=True)
+    case_customer: uuid.UUID = auto_field('client_id', required=True)
     case_organisations: List[int] = fields.List(fields.Integer, required=False)
     protagonists: List[Dict[str, Any]] = fields.List(fields.Dict, required=False)
     case_tags: Optional[str] = fields.String(required=False)
@@ -1684,7 +1685,7 @@ class CaseSchema(ma.SQLAlchemyAutoSchema):
         """
         assert_type_mml(input_var=data.get('case_customer'),
                         field_name='case_customer',
-                        type=int,
+                        type=uuid.UUID,
                         allow_none=True)
 
         client = Client.query.filter(Client.client_id == data.get('case_customer')).first()
@@ -1811,7 +1812,7 @@ class CustomerSchema(ma.SQLAlchemyAutoSchema):
     customer_name: str = auto_field('name', required=True, validate=Length(min=2), allow_none=False)
     customer_description: Optional[str] = auto_field('description', allow_none=True)
     customer_sla: Optional[str] = auto_field('sla', allow_none=True)
-    customer_id: int = auto_field('client_id')
+    customer_id: uuid.UUID = auto_field('client_id')
 
     class Meta:
         model = Client
@@ -1842,7 +1843,7 @@ class CustomerSchema(ma.SQLAlchemyAutoSchema):
 
         assert_type_mml(input_var=data.client_id,
                         field_name='customer_id',
-                        type=int,
+                        type=uuid.UUID,
                         allow_none=True)
 
         client = Client.query.filter(
@@ -1882,7 +1883,7 @@ class CustomerSchema(ma.SQLAlchemyAutoSchema):
         if new_attr is not None:
             assert_type_mml(input_var=data.get('client_id'),
                             field_name='customer_id',
-                            type=int,
+                            type=uuid.UUID,
                             allow_none=True)
 
             data['custom_attributes'] = merge_custom_attributes(new_attr, data.get('client_id'), 'client')
@@ -2474,7 +2475,7 @@ class CaseSchemaForAPIV2(ma.SQLAlchemyAutoSchema):
     case_name: str = auto_field('name', required=True, validate=Length(min=2), allow_none=False)
     case_description: str = auto_field('description', required=True, validate=Length(min=2))
     case_soc_id: int = auto_field('soc_id', required=True)
-    case_customer_id: int = auto_field('client_id', required=True)
+    case_customer_id: uuid.UUID = auto_field('client_id', required=True)
     case_organisations: List[int] = fields.List(fields.Integer, required=False)
     protagonists: List[Dict[str, Any]] = fields.List(fields.Dict, required=False)
     case_tags: Optional[str] = fields.String(required=False)
@@ -2530,17 +2531,18 @@ class CaseSchemaForAPIV2(ma.SQLAlchemyAutoSchema):
             ValidationError: If the customer ID is not valid.
 
         """
-        assert_type_mml(input_var=data.get('case_customer'),
-                        field_name='case_customer',
-                        type=int,
+        customer_identifier = data.get('case_customer_id')
+        assert_type_mml(input_var=customer_identifier,
+                        field_name='case_customer_id',
+                        type=uuid.UUID,
                         allow_none=True)
 
-        client = Client.query.filter(Client.client_id == data.get('case_customer')).first()
+        client = Client.query.filter(Client.client_id == customer_identifier).first()
         if client:
             return data
 
         raise marshmallow.exceptions.ValidationError("Invalid client id",
-                                                     field_name="case_customer")
+                                                     field_name="case_customer_id")
 
 
 class CaseDetailsSchema(ma.SQLAlchemyAutoSchema):
