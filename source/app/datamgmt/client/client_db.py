@@ -56,7 +56,6 @@ def get_client_list(current_user_id: int, is_server_administrator: bool) -> List
     client_list = Client.query.with_entities(
         Client.name.label('customer_name'),
         Client.client_id.label('customer_id'),
-        Client.client_uuid.label('customer_uuid'),
         Client.description.label('customer_description'),
         Client.sla.label('customer_sla'),
         Client.custom_attributes
@@ -89,7 +88,6 @@ def get_client_api(client_id: str) -> Client:
     client = Client.query.with_entities(
         Client.name.label('customer_name'),
         Client.client_id.label('customer_id'),
-        Client.client_uuid.label('customer_uuid'),
         Client.description.label('customer_description'),
         Client.sla.label('customer_sla'),
         Client.custom_attributes

@@ -187,7 +187,7 @@ class UserClient(db.Model):
 
     id = Column(BigInteger, primary_key=True, nullable=False)
     user_id = Column(BigInteger, ForeignKey('user.id'), nullable=False)
-    client_id = Column(BigInteger, ForeignKey('client.client_id'), nullable=False)
+    client_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'), nullable=False)
     access_level = Column(BigInteger, nullable=False)
     allow_alerts = Column(Boolean, nullable=False)
 

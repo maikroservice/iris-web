@@ -63,7 +63,7 @@ def list_customers():
     return response_success("", data=client_list)
 
 
-@manage_customers_rest_blueprint.route('/manage/customers/<int:client_id>', methods=['GET'])
+@manage_customers_rest_blueprint.route('/manage/customers/<uuid:client_id>', methods=['GET'])
 @endpoint_deprecated('GET', '/api/v2/manage/customers/{identifier}')
 @ac_api_requires(Permissions.customers_read)
 @ac_api_requires_client_access()
@@ -76,7 +76,7 @@ def view_customer(client_id):
     return response_success(data=customer)
 
 
-@manage_customers_rest_blueprint.route('/manage/customers/<int:client_id>/contacts/<int:contact_id>/update', methods=['POST'])
+@manage_customers_rest_blueprint.route('/manage/customers/<uuid:client_id>/contacts/<int:contact_id>/update', methods=['POST'])
 @ac_api_requires(Permissions.customers_write)
 @ac_api_requires_client_access()
 def customer_update_contact(client_id, contact_id):
@@ -110,7 +110,7 @@ def customer_update_contact(client_id, contact_id):
     return response_success('Added successfully', data=contact_schema.dump(contact))
 
 
-@manage_customers_rest_blueprint.route('/manage/customers/<int:client_id>/contacts/add', methods=['POST'])
+@manage_customers_rest_blueprint.route('/manage/customers/<uuid:client_id>/contacts/add', methods=['POST'])
 @ac_api_requires(Permissions.customers_write)
 @ac_api_requires_client_access()
 def customer_add_contact(client_id):
@@ -142,7 +142,7 @@ def customer_add_contact(client_id):
     return response_success("Added successfully", data=contact_schema.dump(contact))
 
 
-@manage_customers_rest_blueprint.route('/manage/customers/<int:client_id>/cases', methods=['GET'])
+@manage_customers_rest_blueprint.route('/manage/customers/<uuid:client_id>/cases', methods=['GET'])
 @ac_api_requires(Permissions.customers_read)
 @ac_api_requires_client_access()
 def get_customer_case_stats(client_id):
@@ -226,7 +226,7 @@ def get_customer_case_stats(client_id):
     return response_success(data=cases)
 
 
-@manage_customers_rest_blueprint.route('/manage/customers/update/<int:client_id>', methods=['POST'])
+@manage_customers_rest_blueprint.route('/manage/customers/update/<uuid:client_id>', methods=['POST'])
 @endpoint_deprecated('PUT', '/api/v2/manage/customers/{identifier}')
 @ac_api_requires(Permissions.customers_write)
 @ac_api_requires_client_access()
@@ -283,7 +283,7 @@ def add_customers():
     return response_success('Added successfully', data=customer_schema.dump(customer))
 
 
-@manage_customers_rest_blueprint.route('/manage/customers/delete/<int:client_id>', methods=['POST'])
+@manage_customers_rest_blueprint.route('/manage/customers/delete/<uuid:client_id>', methods=['POST'])
 @endpoint_deprecated('DELETE', '/api/v2/manage/customers/{identifier}')
 @ac_api_requires(Permissions.customers_write)
 @ac_api_requires_client_access()
@@ -305,7 +305,7 @@ def delete_customers(client_id):
     return response_success("Deleted successfully")
 
 
-@manage_customers_rest_blueprint.route('/manage/customers/<int:client_id>/contacts/<int:contact_id>/delete', methods=['POST'])
+@manage_customers_rest_blueprint.route('/manage/customers/<uuid:client_id>/contacts/<int:contact_id>/delete', methods=['POST'])
 @ac_api_requires(Permissions.customers_write)
 @ac_api_requires_client_access()
 def delete_contact_route(client_id, contact_id):

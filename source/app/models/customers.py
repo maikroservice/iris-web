@@ -16,8 +16,9 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
+import uuid
+
 from sqlalchemy import Column
-from sqlalchemy import BigInteger
 from sqlalchemy import UUID
 from sqlalchemy import text
 from sqlalchemy import Text
@@ -32,8 +33,8 @@ from app.db import db
 class Client(db.Model):
     __tablename__ = 'client'
 
-    client_id = Column(BigInteger, primary_key=True)
-    client_uuid = Column(UUID(as_uuid=True), server_default=text("gen_random_uuid()"), nullable=False)
+    client_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4,
+                       server_default=text("gen_random_uuid()"))
     name = Column(Text, unique=True)
     description = Column(Text)
     sla = Column(Text)

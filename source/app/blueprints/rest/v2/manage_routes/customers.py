@@ -114,19 +114,19 @@ def create_customer():
     return customers_operations.create()
 
 
-@customers_blueprint.get('/<int:identifier>')
+@customers_blueprint.get('/<uuid:identifier>')
 @ac_api_requires(Permissions.customers_read)
 def get_customer(identifier):
     return customers_operations.read(identifier)
 
 
-@customers_blueprint.put('/<int:identifier>')
+@customers_blueprint.put('/<uuid:identifier>')
 @ac_api_requires(Permissions.customers_write)
 def put_customer(identifier):
     return customers_operations.update(identifier)
 
 
-@customers_blueprint.delete('/<int:identifier>')
+@customers_blueprint.delete('/<uuid:identifier>')
 @ac_api_requires(Permissions.customers_write)
 def delete_user(identifier):
     return customers_operations.delete(identifier)

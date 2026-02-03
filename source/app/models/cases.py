@@ -48,7 +48,7 @@ class Cases(db.Model):
 
     case_id = Column(BigInteger, primary_key=True)
     soc_id = Column(String(256))
-    client_id = Column(ForeignKey('client.client_id'), nullable=False)
+    client_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'), nullable=False)
     name = Column(String(256))
     description = Column(Text)
     open_date = Column(Date)

@@ -90,7 +90,7 @@ class CaseCreate(Mutation):
     class Arguments:
         name = NonNull(String)
         description = NonNull(String)
-        client_id = NonNull(Int)
+        client_id = NonNull(String)
 
         soc_id = String()
         classification_id = Int()
@@ -142,7 +142,7 @@ class CaseUpdate(Mutation):
         soc_id = String()
         classification_id = Int()
         severity_id = Int()
-        client_id = Int()
+        client_id = String()
         owner_id = Int()
         state_id = Int()
         review_status_id = Int()

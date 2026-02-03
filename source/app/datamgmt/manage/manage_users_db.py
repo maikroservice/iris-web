@@ -377,7 +377,6 @@ def get_user_clients(user_id: int) -> List[Client]:
         UserClient.client
     ).with_entities(
         Client.client_id.label('customer_id'),
-        Client.client_uuid,
         Client.name.label('customer_name')
     ).all()
 
