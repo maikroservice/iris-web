@@ -17,37 +17,39 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import traceback
+from marshmallow import ValidationError
 
-import marshmallow
 from flask import Blueprint
 from flask import request
-from flask_login import current_user
 
-from app import db
+from app.db import db
 from app import app
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.manage.manage_groups_db import add_all_cases_access_to_group
+from app.datamgmt.manage.manage_groups_db import get_groups_list
+from app.datamgmt.manage.manage_groups_db import get_users_by_group_identifiers
 from app.datamgmt.manage.manage_groups_db import add_case_access_to_group
 from app.datamgmt.manage.manage_groups_db import delete_group
 from app.datamgmt.manage.manage_groups_db import get_group
 from app.datamgmt.manage.manage_groups_db import get_group_details
 from app.datamgmt.manage.manage_groups_db import get_group_with_members
-from app.datamgmt.manage.manage_groups_db import get_groups_list_hr_perms
 from app.datamgmt.manage.manage_groups_db import remove_cases_access_from_group
 from app.datamgmt.manage.manage_groups_db import remove_user_from_group
 from app.datamgmt.manage.manage_groups_db import update_group_members
 from app.datamgmt.manage.manage_users_db import get_user
-from app.iris_engine.access_control.utils import ac_ldp_group_removal
-from app.iris_engine.access_control.utils import ac_flag_match_mask
+from app.iris_engine.access_control.utils import ac_ldp_group_removal, ac_permission_to_list
 from app.iris_engine.access_control.utils import ac_ldp_group_update
 from app.iris_engine.access_control.utils import ac_recompute_effective_ac_from_users_list
-from app.iris_engine.utils.tracker import track_activity
-from app.models.authorization import Permissions
+from app.models.authorization import Permissions, ac_flag_match_mask
 from app.schema.marshables import AuthorizationGroupSchema
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.access_controls import ac_api_return_access_denied
 from app.blueprints.responses import response_error
 from app.blueprints.responses import response_success
 from app.iris_engine.demo_builder import protect_demo_mode_group
+from app.business.groups import groups_create
+from app.blueprints.rest.endpoints import endpoint_deprecated
+
 
 manage_groups_rest_blueprint = Blueprint('manage_groups_rest', __name__)
 
@@ -58,12 +60,18 @@ log = app.logger
 @manage_groups_rest_blueprint.route('/manage/groups/list', methods=['GET'])
 @ac_api_requires(Permissions.server_administrator)
 def manage_groups_index():
-    groups = get_groups_list_hr_perms()
+    groups = get_groups_list()
+    groups = AuthorizationGroupSchema().dump(groups, many=True)
+    group_to_users = get_users_by_group_identifiers()
+    for group in groups:
+        group['group_permissions_list'] = ac_permission_to_list(group['group_permissions'])
+        group['group_members'] = group_to_users.get(group['group_id'], [])
 
     return response_success('', data=groups)
 
 
 @manage_groups_rest_blueprint.route('/manage/groups/add', methods=['POST'])
+@endpoint_deprecated('POST', '/api/v2/manage/groups')
 @ac_api_requires(Permissions.server_administrator)
 def manage_groups_add():
 
@@ -81,18 +89,16 @@ def manage_groups_add():
         ags_c = ags.load(data)
         ags.verify_unique(data)
 
-        db.session.add(ags_c)
-        db.session.commit()
+        groups_create(ags_c)
 
-    except marshmallow.exceptions.ValidationError as e:
+        return response_success('', data=ags.dump(ags_c))
+
+    except ValidationError as e:
         return response_error(msg='Data error', data=e.messages)
-
-    track_activity(message=f'added group {ags_c.group_name}', ctx_less=True)
-
-    return response_success('', data=ags.dump(ags_c))
 
 
 @manage_groups_rest_blueprint.route('/manage/groups/update/<int:cur_id>', methods=['POST'])
+@endpoint_deprecated('PUT', '/api/v2/manage/groups/{identifier}')
 @ac_api_requires(Permissions.server_administrator)
 def manage_groups_update(cur_id):
 
@@ -117,19 +123,20 @@ def manage_groups_update(cur_id):
         data['group_id'] = cur_id
         ags_c = ags.load(data, instance=group, partial=True)
 
-        if not ac_flag_match_mask(data['group_permissions'], Permissions.server_administrator.value) and ac_ldp_group_update(current_user.id):
+        if not ac_flag_match_mask(data['group_permissions'], Permissions.server_administrator.value) and ac_ldp_group_update(iris_current_user.id):
             db.session.rollback()
             return response_error(msg="That might not be a good idea Dave", data="Update the group permissions will lock you out")
 
         db.session.commit()
 
-    except marshmallow.exceptions.ValidationError as e:
+    except ValidationError as e:
         return response_error(msg="Data error", data=e.messages)
 
     return response_success('', data=ags.dump(ags_c))
 
 
 @manage_groups_rest_blueprint.route('/manage/groups/delete/<int:cur_id>', methods=['POST'])
+@endpoint_deprecated('DELETE', '/api/v2/manage/groups/{identifier}')
 @ac_api_requires(Permissions.server_administrator)
 def manage_groups_delete(cur_id):
 
@@ -140,8 +147,8 @@ def manage_groups_delete(cur_id):
     if protect_demo_mode_group(group):
         return ac_api_return_access_denied()
 
-    if ac_ldp_group_removal(current_user.id, group_id=group.group_id):
-        return response_error("I can't let you do that Dave", data="Removing this group will lock you out")
+    if ac_ldp_group_removal(iris_current_user.id, group_id=group.group_id):
+        return response_error('I can\'t let you do that Dave', data='Removing this group will lock you out')
 
     delete_group(group)
 
@@ -149,6 +156,7 @@ def manage_groups_delete(cur_id):
 
 
 @manage_groups_rest_blueprint.route('/manage/groups/<int:cur_id>', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/manage/groups/{identifier}')
 @ac_api_requires(Permissions.server_administrator)
 def manage_groups_view(cur_id):
 
@@ -285,7 +293,7 @@ def manage_groups_cac_delete_case(cur_id):
         db.session.commit()
 
     except Exception as e:
-        log.error("Error while removing cases access from group: {}".format(e))
+        log.error(f"Error while removing cases access from group: {e}")
         log.error(traceback.format_exc())
         return response_error(msg=str(e))
 

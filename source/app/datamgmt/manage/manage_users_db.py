@@ -17,27 +17,28 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 from typing import List
+from typing import Optional
 
 from functools import reduce
-from flask_login import current_user
+from flask_login import AnonymousUserMixin
 from sqlalchemy import and_
 
-import app
+from app.blueprints.iris_user import iris_current_user
+from app.datamgmt.db_operations import db_create
+from app.logger import logger
 from app import bc
-from app import db
+from app.db import db
 from app.datamgmt.case.case_db import get_case
 from app.datamgmt.conversions import convert_sort_direction
-from app.iris_engine.access_control.utils import ac_access_level_mask_from_val_list
 from app.iris_engine.access_control.utils import ac_ldp_group_removal
 from app.iris_engine.access_control.utils import ac_access_level_to_list
 from app.iris_engine.access_control.utils import ac_auto_update_user_effective_access
 from app.iris_engine.access_control.utils import ac_get_detailed_effective_permissions_from_groups
 from app.iris_engine.access_control.utils import ac_remove_case_access_from_user
-from app.iris_engine.access_control.utils import ac_set_case_access_for_user
 from app.models.cases import Cases
-from app.models.models import Client
+from app.models.customers import Client
 from app.models.models import UserActivity
-from app.models.authorization import CaseAccessLevel
+from app.models.authorization import CaseAccessLevel, ac_access_level_mask_from_val_list
 from app.models.authorization import UserClient
 from app.models.authorization import Group
 from app.models.authorization import Organisation
@@ -48,12 +49,12 @@ from app.models.authorization import UserGroup
 from app.models.authorization import UserOrganisation
 
 
-def get_user(user_id, id_key: str = 'id') -> [User, None]:
+def get_user(user_id, id_key: str = 'id') -> Optional[User]:
     user = User.query.filter(getattr(User, id_key) == user_id).first()
     return user
 
 
-def get_active_user(user_id, id_key: str = 'id') -> [User, None]:
+def get_active_user(user_id, id_key: str = 'id') -> Optional[User]:
     user = User.query.filter(
         and_(
             getattr(User, id_key) == user_id,
@@ -122,7 +123,7 @@ def update_user_groups(user_id, groups):
         db.session.add(user_group)
 
     for group_id in groups_to_remove:
-        if current_user.id == user_id and ac_ldp_group_removal(user_id=user_id, group_id=group_id):
+        if (not isinstance(iris_current_user, AnonymousUserMixin)) and iris_current_user.id == user_id and ac_ldp_group_removal(user_id=user_id, group_id=group_id):
             continue
 
         UserGroup.query.filter(
@@ -134,6 +135,7 @@ def update_user_groups(user_id, groups):
 
     ac_auto_update_user_effective_access(user_id)
 
+
 def add_user_to_customer(user_id, customer_id):
     user_client = UserClient.query.filter(
         UserClient.user_id == user_id,
@@ -141,19 +143,16 @@ def add_user_to_customer(user_id, customer_id):
     ).first()
 
     if user_client:
-        return True
+        return
 
     user_client = UserClient()
     user_client.user_id = user_id
     user_client.client_id = customer_id
     user_client.access_level = CaseAccessLevel.full_access.value
     user_client.allow_alerts = True
-    db.session.add(user_client)
-    db.session.commit()
+    db_create(user_client)
 
     ac_auto_update_user_effective_access(user_id)
-
-    return True
 
 
 def update_user_customers(user_id, customers):
@@ -258,7 +257,6 @@ def change_user_primary_org(user_id, old_org_id, new_org_id):
         uo_new.is_primary_org = True
 
     db.session.commit()
-    return
 
 
 def add_user_to_organisation(user_id, org_id, make_primary=False):
@@ -272,8 +270,7 @@ def add_user_to_organisation(user_id, org_id, make_primary=False):
     if uo_exists:
         uo_exists.is_primary_org = make_primary
         db.session.commit()
-
-        return True
+        return
 
     # Check if user has a primary org already
     prim_org = get_user_primary_org(user_id=user_id)
@@ -286,9 +283,7 @@ def add_user_to_organisation(user_id, org_id, make_primary=False):
     uo.user_id = user_id
     uo.org_id = org_id
     uo.is_primary_org = prim_org is None
-    db.session.add(uo)
-    db.session.commit()
-    return True
+    db_create(uo)
 
 
 def get_user_primary_org(user_id):
@@ -324,14 +319,12 @@ def add_user_to_group(user_id, group_id):
     ).scalar()
 
     if exists:
-        return True
+        return
 
     ug = UserGroup()
     ug.user_id = user_id
     ug.group_id = group_id
-    db.session.add(ug)
-    db.session.commit()
-    return True
+    db_create(ug)
 
 
 def get_user_organisations(user_id):
@@ -401,7 +394,7 @@ def get_user_cases_fast(user_id):
         UserCaseEffectiveAccess.access_level != CaseAccessLevel.deny_all.value
     ).all()
 
-    return [c.case_id for c  in user_cases]
+    return [c.case_id for c in user_cases]
 
 
 def remove_cases_access_from_user(user_id, cases_list):
@@ -442,46 +435,6 @@ def remove_case_access_from_user(user_id, case_id):
     return True, 'Case access removed'
 
 
-def set_user_case_access(user_id, case_id, access_level):
-    if user_id is None or type(user_id) is not int:
-        return False, 'Invalid user id'
-
-    if case_id is None or type(case_id) is not int:
-        return False, "Invalid case id"
-
-    if access_level is None or type(access_level) is not int:
-        return False, "Invalid access level"
-
-    if CaseAccessLevel.has_value(access_level) is False:
-        return False, "Invalid access level"
-
-    uca = UserCaseAccess.query.filter(
-        UserCaseAccess.user_id == user_id,
-        UserCaseAccess.case_id == case_id
-    ).all()
-
-    if len(uca) > 1:
-        for u in uca:
-            db.session.delete(u)
-        db.session.commit()
-        uca = None
-
-    if not uca:
-        uca = UserCaseAccess()
-        uca.user_id = user_id
-        uca.case_id = case_id
-        uca.access_level = access_level
-        db.session.add(uca)
-    else:
-        uca[0].access_level = access_level
-
-    db.session.commit()
-
-    ac_set_case_access_for_user(user_id, case_id, access_level)
-
-    return True, 'Case access set to {} for user {}'.format(access_level, user_id)
-
-
 def get_user_details(user_id, include_api_key=False):
 
     user = User.query.filter(User.id == user_id).first()
@@ -511,6 +464,10 @@ def get_user_details(user_id, include_api_key=False):
     row['user_primary_organisation_id'] = upg.org_id if upg else 0
 
     return row
+
+
+def get_user_details_return_user(user_id):
+    return User.query.filter(User.id == user_id).first()
 
 
 def add_case_access_to_user(user, cases_list, access_level):
@@ -670,7 +627,7 @@ def get_users_list_restricted_from_case(case_id):
 
 
 def create_user(user_name: str, user_login: str, user_password: str, user_email: str, user_active: bool,
-                user_external_id: str = None, user_is_service_account: bool = False):
+                user_is_service_account: bool = False):
 
     if user_is_service_account is True and (user_password is None or user_password == ''):
         pw_hash = None
@@ -679,7 +636,7 @@ def create_user(user_name: str, user_login: str, user_password: str, user_email:
         pw_hash = bc.generate_password_hash(user_password.encode('utf8')).decode('utf8')
 
     user = User(user=user_login, name=user_name, email=user_email, password=pw_hash, active=user_active,
-                external_id=user_external_id, is_service_account=user_is_service_account)
+                is_service_account=user_is_service_account)
     user.save()
 
     add_user_to_organisation(user.id, org_id=1)
@@ -694,9 +651,11 @@ def update_user(user: User, name: str = None, email: str = None, password: str =
         pw_hash = bc.generate_password_hash(password.encode('utf8')).decode('utf8')
         user.password = pw_hash
 
-    for key, value in [('name', name,), ('email', email,)]:
-        if value is not None:
-            setattr(user, key, value)
+    if name is not None:
+        user.name = name
+
+    if email is not None:
+        user.email = email
 
     db.session.commit()
 
@@ -713,6 +672,8 @@ def delete_user(user_id):
     UserGroup.query.filter(UserGroup.user_id == user_id).delete()
     UserCaseEffectiveAccess.query.filter(UserCaseEffectiveAccess.user_id == user_id).delete()
 
+    # TODO should rather do this with cascade?
+    UserClient.query.filter(UserClient.user_id == user_id).delete()
     User.query.filter(User.id == user_id).delete()
     db.session.commit()
 
@@ -769,7 +730,7 @@ def get_filtered_users(user_ids: str = None,
         )
 
     except Exception as e:
-        app.logger.exception(f'Error getting users: {str(e)}')
+        logger.exception(f'Error getting users: {str(e)}')
         return None
 
     return filtered_users

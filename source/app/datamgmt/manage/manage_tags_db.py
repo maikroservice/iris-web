@@ -1,29 +1,34 @@
+#  IRIS Source Code
+#  Copyright (C) 2025 - DFIR-IRIS
+#  contact@dfir-iris.org
+#
+#  This program is free software; you can redistribute it and/or
+#  modify it under the terms of the GNU Lesser General Public
+#  License as published by the Free Software Foundation; either
+#  version 3 of the License, or (at your option) any later version.
+#
+#  This program is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+#  Lesser General Public License for more details.
+#
+#  You should have received a copy of the GNU Lesser General Public License
+#  along with this program; if not, write to the Free Software Foundation,
+#  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 from functools import reduce
 
 from sqlalchemy import and_
+from flask_sqlalchemy.pagination import Pagination
 
-import app
+from app.db import db
+from app.logger import logger
 from app.models.models import Tags
 from app.datamgmt.conversions import convert_sort_direction
+from app.models.pagination_parameters import PaginationParameters
 
 
-def get_filtered_tags(tag_title=None,
-                      tag_namespace=None,
-                      page=1,
-                      per_page=10,
-                      sort_by='name',
-                      sort_dir='asc'):
-    """
-    Returns a list of tags, filtered by the given parameters.
-
-    :param tag_title: Tag title
-    :param tag_namespace: Tag namespace
-    :param page: Page number
-    :param per_page: Number of items per page
-    :param sort_by: Sort by
-    :param sort_dir: Sort direction
-    :return: Filtered tags
-    """
+def get_filtered_tags(tag_title, tag_namespace, pagination_parameters: PaginationParameters) -> Pagination:
 
     conditions = []
     if tag_title:
@@ -37,8 +42,9 @@ def get_filtered_tags(tag_title=None,
 
     data = Tags.query.filter(*conditions)
 
+    sort_by = pagination_parameters.get_order_by()
     if sort_by is not None:
-        order_func = convert_sort_direction(sort_dir)
+        order_func = convert_sort_direction(pagination_parameters.get_direction())
 
         if sort_by == 'name':
             data = data.order_by(order_func(Tags.tag_title))
@@ -49,10 +55,10 @@ def get_filtered_tags(tag_title=None,
 
     try:
 
-        filtered_tags = data.paginate(page=page, per_page=per_page)
+        filtered_tags = data.paginate(page=pagination_parameters.get_page(), per_page=pagination_parameters.get_per_page())
 
     except Exception as e:
-        app.logger.exception(f"Failed to get filtered tags: {e}")
+        logger.exception(f"Failed to get filtered tags: {e}")
         raise e
 
     return filtered_tags
@@ -76,11 +82,10 @@ def add_db_tag(tag_title, tag_namespace=None):
             return existing_tag
 
         tag.save()
-        app.db.session.commit()
+        db.session.commit()
 
     except Exception as e:
-        app.logger.exception(f"Failed to add tag: {e}")
+        logger.exception(f"Failed to add tag: {e}")
         raise e
 
     return tag
-

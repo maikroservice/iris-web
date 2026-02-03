@@ -21,23 +21,26 @@ import secrets
 from flask import Blueprint
 from flask import request
 from flask import session
-from flask_login import current_user
 
-from app import db
+from app.db import db
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.manage.manage_users_db import get_user
 from app.datamgmt.manage.manage_users_db import get_user_primary_org
 from app.datamgmt.manage.manage_users_db import update_user
-from app.iris_engine.access_control.utils import ac_current_user_has_permission
 from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
 from app.iris_engine.access_control.utils import ac_recompute_effective_ac
 from app.iris_engine.utils.tracker import track_activity
 from app.models.authorization import Permissions
+from app.models.models import ServerSettings
 from app.schema.marshables import UserSchema
 from app.schema.marshables import BasicUserSchema
 from app.blueprints.access_controls import ac_api_requires
+from app.blueprints.access_controls import ac_current_user_has_permission
 from app.blueprints.responses import response_error
 from app.blueprints.responses import response_success
 from app.blueprints.rest.endpoints import endpoint_removed
+from app.blueprints.rest.endpoints import endpoint_deprecated
+
 
 profile_rest_blueprint = Blueprint('profile_rest', __name__)
 
@@ -46,7 +49,7 @@ profile_rest_blueprint = Blueprint('profile_rest', __name__)
 @ac_api_requires()
 def user_renew_api():
 
-    user = get_user(current_user.id)
+    user = get_user(iris_current_user.id)
     user.api_key = secrets.token_urlsafe(nbytes=64)
 
     db.session.commit()
@@ -78,28 +81,29 @@ def user_has_permission():
 
 
 @profile_rest_blueprint.route('/user/update', methods=['POST'])
+@endpoint_deprecated('PUT', '/api/v2/me')
 @ac_api_requires()
 def update_user_view():
+
     try:
-        user = get_user(current_user.id)
+        user = get_user(iris_current_user.id)
         if not user:
             return response_error("Invalid user ID for this case")
 
         # validate before saving
         user_schema = UserSchema()
         jsdata = request.get_json()
-        jsdata['user_id'] = current_user.id
-        puo = get_user_primary_org(current_user.id)
+        jsdata['user_id'] = iris_current_user.id
+        puo = get_user_primary_org(iris_current_user.id)
 
         jsdata['user_primary_organisation_id'] = puo.org_id
 
         cuser = user_schema.load(jsdata, instance=user, partial=True)
-        update_user(password=jsdata.get('user_password'),
-                    user=user)
+        update_user(user, password=jsdata.get('user_password'))
         db.session.commit()
 
         if cuser:
-            track_activity("user {} updated itself".format(user.user))
+            track_activity(f"user {user.user} updated itself")
             return response_success("User updated", data=user_schema.dump(user))
 
         return response_error("Unable to update user for internal reasons")
@@ -109,12 +113,14 @@ def update_user_view():
 
 
 @profile_rest_blueprint.route('/user/theme/set/<string:theme>', methods=['GET'])
+@endpoint_deprecated('PUT', '/api/v2/me')
 @ac_api_requires()
 def profile_set_theme(theme):
+
     if theme not in ['dark', 'light']:
         return response_error('Invalid data')
 
-    user = get_user(current_user.id)
+    user = get_user(iris_current_user.id)
     if not user:
         return response_error("Invalid user ID")
 
@@ -125,12 +131,14 @@ def profile_set_theme(theme):
 
 
 @profile_rest_blueprint.route('/user/deletion-prompt/set/<string:val>', methods=['GET'])
+@endpoint_deprecated('PUT', '/api/v2/me')
 @ac_api_requires()
 def profile_set_deletion_prompt(val):
+
     if val not in ['true', 'false']:
         return response_error('Invalid data')
 
-    user = get_user(current_user.id)
+    user = get_user(iris_current_user.id)
     if not user:
         return response_error("Invalid user ID")
 
@@ -141,12 +149,14 @@ def profile_set_deletion_prompt(val):
 
 
 @profile_rest_blueprint.route('/user/mini-sidebar/set/<string:val>', methods=['GET'])
+@endpoint_deprecated('PUT', '/api/v2/me')
 @ac_api_requires()
 def profile_set_minisidebar(val):
+
     if val not in ['true', 'false']:
         return response_error('Invalid data')
 
-    user = get_user(current_user.id)
+    user = get_user(iris_current_user.id)
     if not user:
         return response_error("Invalid user ID")
 
@@ -160,26 +170,33 @@ def profile_set_minisidebar(val):
 @ac_api_requires()
 def profile_refresh_permissions_and_ac():
 
-    user = get_user(current_user.id)
+    user = get_user(iris_current_user.id)
     if not user:
         return response_error("Invalid user ID")
 
-    ac_recompute_effective_ac(current_user.id)
+    ac_recompute_effective_ac(iris_current_user.id)
     session['permissions'] = ac_get_effective_permissions_of_user(user)
 
     return response_success('Access control and permissions refreshed')
 
 
 @profile_rest_blueprint.route('/user/whoami', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/me')
 @ac_api_requires()
 def profile_whoami():
     """Returns the current user's profile"""
-    user = get_user(current_user.id)
+
+    user = get_user(iris_current_user.id)
     if not user:
         return response_error("Invalid user ID")
 
     user_schema = BasicUserSchema()
-    return response_success(data=user_schema.dump(user))
+    data = user_schema.dump(user)
+    srv_settings = ServerSettings.query.first()
+
+    if srv_settings.force_confirmation_before_delete:
+        data["has_deletion_confirmation"] = True
+    return response_success(data=data)
 
 
 @profile_rest_blueprint.route('/user/is-admin', methods=['GET'])

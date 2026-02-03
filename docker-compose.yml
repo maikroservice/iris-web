@@ -20,12 +20,16 @@ services:
     extends:
       file: docker-compose.base.yml
       service: rabbitmq
+    restart: always
+
 
   db:
     extends:
       file: docker-compose.base.yml
       service: db
     image: ${DB_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_db}:${DB_IMAGE_TAG:-v2.4.20}
+    build: docker/db/
+    restart: always
 
 
   app:
@@ -33,19 +37,74 @@ services:
       file: docker-compose.base.yml
       service: app
     image: ${APP_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_app}:${APP_IMAGE_TAG:-v2.4.20}
+    build:
+      context: .
+      dockerfile: docker/webApp/Dockerfile
+    image: iriswebapp_app:v2.3.3
+    container_name: iriswebapp_app
+    command: ['nohup', './iris-entrypoint.sh', 'iriswebapp']
+    volumes:
+      # RootCA necessary when dealing with an auth server without a trusted CA signed certificate
+      - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
+      - ./certificates/:/home/iris/certificates/:ro
+      - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - ./certificates/saml/:/iriswebapp/certificates/saml/:ro
+      - iris-downloads:/home/iris/downloads
+      - user_templates:/home/iris/user_templates
+      - server_data:/home/iris/server_data
+    restart: always
+
 
   worker:
     extends:
       file: docker-compose.base.yml
       service: worker
     image: ${APP_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_app}:${APP_IMAGE_TAG:-v2.4.20}
-
+    build:
+      context: .
+      dockerfile: docker/webApp/Dockerfile
+    image: iriswebapp_app:v2.3.3
+    container_name: iriswebapp_worker
+    command: ['./wait-for-iriswebapp.sh', 'app:8000', './iris-entrypoint.sh', 'iris-worker']
+    volumes:
+      - ./certificates/rootCA/irisRootCACert.pem:/etc/irisRootCACert.pem:ro
+      - ./certificates/:/home/iris/certificates/:ro
+      - ./certificates/ldap/:/iriswebapp/certificates/ldap/:ro
+      - ./certificates/saml/:/iriswebapp/certificates/saml/:ro
+      - iris-downloads:/home/iris/downloads
+      - user_templates:/home/iris/user_templates
+      - server_data:/home/iris/server_data
+    depends_on:
+      - "rabbitmq"
+      - "db"
+      - "app"
+    env_file:
+      - .env
+    environment:
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+      - POSTGRES_ADMIN_USER
+      - POSTGRES_ADMIN_PASSWORD
+      - POSTGRES_SERVER
+      - POSTGRES_PORT
+      - DOCKERIZED
+      - IRIS_SECRET_KEY
+      - IRIS_SECURITY_PASSWORD_SALT
+      - IRIS_WORKER
+    networks:
+      - iris_backend
 
   nginx:
     extends:
       file: docker-compose.base.yml
       service: nginx
     image: ${NGINX_IMAGE_NAME:-ghcr.io/dfir-iris/iriswebapp_nginx}:${NGINX_IMAGE_TAG:-v2.4.20}
+    build:
+      context: docker/nginx/
+      args:
+        NGINX_CONF_GID: 1234
+        NGINX_CONF_FILE: nginx.conf
+    restart: always
 
 
 volumes:

@@ -15,27 +15,30 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-import collections
-import json
-import logging as logger
+
 import os
-import urllib.parse
 from flask import Flask
+from flask import g
 from flask import session
 from flask_bcrypt import Bcrypt
 from flask_caching import Cache
+from flask_cors import CORS
 
 from flask_login import LoginManager
 from flask_marshmallow import Marshmallow
-from flask_socketio import SocketIO, Namespace
-from flask_sqlalchemy import SQLAlchemy
-from functools import partial
+from flask_socketio import SocketIO
+from flask_socketio import Namespace
 
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from app.flask_dropzone import Dropzone
+from app.configuration import Config
 from app.iris_engine.tasker.celery import make_celery
+from app.iris_engine.tasker.celery import set_celery_flask_context
 from app.iris_engine.access_control.oidc_handler import get_oidc_client
+from app.jinja_filters import register_jinja_filters
+from app.models.authorization import ac_flag_match_mask
+from app.db import db
 
 
 class ReverseProxied(object):
@@ -56,28 +59,23 @@ class AlertsNamespace(Namespace):
 APP_PATH = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TEMPLATE_PATH = os.path.join(APP_PATH, 'templates/')
 
-# Grabs the folder where the script runs.
-basedir = os.path.abspath(os.path.dirname(__file__))
-LOG_FORMAT = '%(asctime)s :: %(levelname)s :: %(module)s :: %(funcName)s :: %(message)s'
-LOG_TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
-
-logger.basicConfig(level=logger.INFO, format=LOG_FORMAT, datefmt=LOG_TIME_FORMAT)
-
+bc = Bcrypt()  # flask-bcrypt
+ma = Marshmallow()
+celery = make_celery(__name__)
 app = Flask(__name__, static_folder='../static')
-
-# CORS(app,
-#      supports_credentials=True,
-#      resources={r"/api/*": {"origins": ["http://127.0.0.1:5137", "http://localhost:5173"]}})
 
 
 def ac_current_user_has_permission(*permissions):
     """
     Return True if current user has permission
     """
+    if 'permissions' not in session:
+        return False
+
+    current_user_permissions = session['permissions']
     for permission in permissions:
 
-        if ('permissions' in session and
-                session['permissions'] & permission.value == permission.value):
+        if ac_flag_match_mask(current_user_permissions, permission.value):
             return True
 
     return False
@@ -90,48 +88,45 @@ def ac_current_user_has_manage_perms():
     return False
 
 
-app.jinja_env.filters['unquote'] = lambda u: urllib.parse.unquote(u)
-app.jinja_env.filters['tojsonsafe'] = lambda u: json.dumps(u, indent=4, ensure_ascii=False)
-app.jinja_env.filters['tojsonindent'] = lambda u: json.dumps(u, indent=4)
-app.jinja_env.filters['escape_dots'] = lambda u: u.replace('.', '[.]')
+register_jinja_filters(app.jinja_env)
+
 app.jinja_env.globals.update(user_has_perm=ac_current_user_has_permission)
 app.jinja_env.globals.update(user_has_manage_perms=ac_current_user_has_manage_perms)
-app.jinja_options["autoescape"] = lambda _: True
+app.jinja_options['autoescape'] = lambda _: True
 app.jinja_env.autoescape = True
 
-app.config.from_object('app.configuration.Config')
-app.config.update(
-    SESSION_COOKIE_SECURE=True,
-    SESSION_COOKIE_HTTPONLY=True,
-    SESSION_COOKIE_SAMESITE='Lax'
-)
+app.config.from_object(Config)
+app.config['timezone'] = 'Europe/Paris'
+from app.post_init import PostInit
 
 cache = Cache(app)
 
-SQLALCHEMY_ENGINE_OPTIONS = {
-    "json_deserializer": partial(json.loads, object_pairs_hook=collections.OrderedDict),
-    "pool_pre_ping": True
-}
+db.init_app(app)
 
-db = SQLAlchemy(app, engine_options=SQLALCHEMY_ENGINE_OPTIONS)  # flask-sqlalchemy
-
-bc = Bcrypt(app)  # flask-bcrypt
+bc.init_app(app)
 
 lm = LoginManager()  # flask-loginmanager
 lm.init_app(app)  # init the login manager
-
-ma = Marshmallow(app) # Init marshmallow
+ma.init_app(app)
 
 dropzone = Dropzone(app)
 
-celery = make_celery(app)
+set_celery_flask_context(celery, app)
 
-# store = HttpExposedFileSystemStore(
-#     path='images',
-#     prefix='/static/assets/images/'
-# )
+#if app.config.get('DEVELOPMENT_ENABLED'):
+CORS(app,
+     supports_credentials=True,
+     resources={r"/api/*": {"origins": [
+         "https://127.0.0.1:5137",
+         "https://localhost:5173",
+         "https://localhost",
+         "https://127.0.0.1",
+         "http://app:8000",
+         "http://frontend:5173",
+     ]}})
 
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 #app.wsgi_app = store.wsgi_middleware(app.wsgi_app)
 
 socket_io = SocketIO(app, cors_allowed_origins="*")
@@ -140,16 +135,24 @@ alerts_namespace = AlertsNamespace('/alerts')
 socket_io.on_namespace(alerts_namespace)
 
 oidc_client = None
-if app.config.get('AUTHENTICATION_TYPE') == "oidc":
-    oidc_client = get_oidc_client(app)
+if app.config.get('AUTHENTICATION_TYPE') == 'oidc':
+    oidc_client = get_oidc_client(app.config, app.logger)
+from app.views import register_blueprints
+from app.views import load_user
+from app.views import load_user_from_request
+
 
 @app.teardown_appcontext
 def shutdown_session(exception=None):
-    db.session.remove()
+    db.session.close()
+    g.pop('auth_user', None)
+    g.pop('auth_token_user_id', None)
+    g.pop('auth_user_permissions', None)
+
 
 @app.after_request
 def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Origin', app.config['IRIS_ALLOW_ORIGIN'])
     response.headers.add('Access-Control-Allow-Credentials', 'true')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
     response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
@@ -157,17 +160,11 @@ def after_request(response):
     return response
 
 
-from app.views import register_blusprints
-from app.views import load_user
-from app.views import load_user_from_request
-
-register_blusprints(app)
-
-from app.post_init import run_post_init
+register_blueprints(app)
 
 try:
-
-    run_post_init(development=app.config['DEVELOPMENT'])
+    post_init = PostInit(app)
+    post_init.run()
 
 except Exception as e:
     app.logger.exception('Post init failed. IRIS not started')
@@ -175,3 +172,11 @@ except Exception as e:
 
 lm.user_loader(load_user)
 lm.request_loader(load_user_from_request)
+
+from app.blueprints.socket_io_event_handlers.case_event_handlers import register_case_event_handlers
+from app.blueprints.socket_io_event_handlers.case_notes_event_handlers import register_notes_event_handlers
+from app.blueprints.socket_io_event_handlers.update_event_handlers import register_update_event_handlers
+
+register_case_event_handlers()
+register_notes_event_handlers()
+register_update_event_handlers()

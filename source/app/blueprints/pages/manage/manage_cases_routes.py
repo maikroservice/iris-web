@@ -21,10 +21,10 @@ from flask import Blueprint
 from flask import redirect
 from flask import render_template
 from flask import url_for
-from flask_login import current_user
 from flask_wtf import FlaskForm
 from werkzeug import Response
 
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.case.case_db import get_case
 from app.datamgmt.client.client_db import get_client_list
 from app.datamgmt.manage.manage_attribute_db import get_default_custom_attributes
@@ -34,14 +34,15 @@ from app.datamgmt.manage.manage_case_templates_db import get_case_templates_list
 from app.datamgmt.manage.manage_cases_db import get_case_protagonists
 from app.datamgmt.manage.manage_common import get_severities_list
 from app.forms import AddCaseForm
-from app.iris_engine.access_control.utils import ac_fast_check_current_user_has_case_access
-from app.iris_engine.access_control.utils import ac_current_user_has_permission
 from app.models.authorization import CaseAccessLevel
 from app.models.authorization import Permissions
 from app.schema.marshables import CaseDetailsSchema
 from app.blueprints.access_controls import ac_api_return_access_denied
+from app.blueprints.access_controls import ac_fast_check_current_user_has_case_access
+from app.blueprints.access_controls import ac_current_user_has_permission
 from app.blueprints.access_controls import ac_requires
 from app.blueprints.responses import response_error
+from app.schema.marshables import CaseStateSchema
 
 manage_cases_blueprint = Blueprint('manage_case',
                                    __name__,
@@ -82,18 +83,18 @@ def _details_case(cur_id: int, caseid: int, url_redir: bool) -> Union[str, Respo
 
     case_classifications = get_case_classifications_list()
     case_states = get_case_states_list()
+    dumped_case_states = CaseStateSchema(many=True).dump(case_states)
     user_is_server_administrator = ac_current_user_has_permission(Permissions.server_administrator)
 
-    customers = get_client_list(current_user_id=current_user.id,
-                                is_server_administrator=user_is_server_administrator)
+    customers = get_client_list(iris_current_user.id, user_is_server_administrator)
 
     severities = get_severities_list()
     protagonists = [r._asdict() for r in get_case_protagonists(cur_id)]
 
     form = FlaskForm()
 
-    return render_template("modal_case_info_from_case.html", data=res, form=form, protagonists=protagonists,
-                           case_classifications=case_classifications, case_states=case_states, customers=customers,
+    return render_template('modal_case_info_from_case.html', data=res, form=form, protagonists=protagonists,
+                           case_classifications=case_classifications, case_states=dumped_case_states, customers=customers,
                            severities=severities)
 
 
@@ -116,12 +117,11 @@ def add_case_modal(caseid: int, url_redir: bool):
         return redirect(url_for('manage_case.manage_index_cases', cid=caseid))
 
     form = AddCaseForm()
-    # Show only clients that the user has access to
-    client_list = get_client_list(current_user_id=current_user.id,
-                                  is_server_administrator=ac_current_user_has_permission(
-                                      Permissions.server_administrator))
 
-    form.case_customer.choices = [(c['customer_id'], c['customer_name']) for c in client_list]
+    # Show only clients that the user has access to
+    client_list = get_client_list(iris_current_user.id, ac_current_user_has_permission(Permissions.server_administrator))
+
+    form.case_customer_id.choices = [(c['customer_id'], c['customer_name']) for c in client_list]
 
     form.classification_id.choices = [(clc['id'], clc['name_expanded']) for clc in get_case_classifications_list()]
     form.case_template_id.choices = [(ctp['id'], ctp['display_name']) for ctp in get_case_templates_list()]

@@ -20,16 +20,14 @@ from flask import Blueprint
 from flask import render_template
 from flask import redirect
 from flask import url_for
-from flask_login import current_user
 from flask_wtf import FlaskForm
 from typing import Union
 from werkzeug import Response
 
 from app.datamgmt.alerts.alerts_db import get_alert_by_id
-from app.datamgmt.manage.manage_access_control_db import user_has_client_access
 from app.models.authorization import Permissions
 from app.blueprints.responses import response_error
-from app.blueprints.access_controls import ac_requires
+from app.blueprints.access_controls import ac_requires, ac_current_user_has_customer_access
 
 alerts_blueprint = Blueprint(
     'alerts',
@@ -78,7 +76,7 @@ def alert_comment_modal(cur_id, caseid, url_redir):
     if not alert:
         return response_error('Invalid alert ID')
 
-    if not user_has_client_access(current_user.id, alert.alert_customer_id):
+    if not ac_current_user_has_customer_access(alert.alert_customer_id):
         return response_error('User not entitled to update alerts for the client', status=403)
 
     return render_template("modal_conversation.html", element_id=cur_id, element_type='alerts',

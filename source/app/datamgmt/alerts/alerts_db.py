@@ -15,17 +15,32 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 from copy import deepcopy
-
 import json
-from datetime import datetime, timedelta
-from flask_login import current_user
-from sqlalchemy import desc, asc, func, tuple_, or_, not_, and_
-from sqlalchemy.orm import aliased, make_transient, selectinload
-from typing import List, Tuple
+from datetime import datetime
+from datetime import timedelta
+from typing import List
+from typing import Optional
+from typing import Tuple
 
-import app
-from app import db
+from sqlalchemy import desc
+from sqlalchemy import asc
+from sqlalchemy import func
+from sqlalchemy import tuple_
+from sqlalchemy import or_
+from sqlalchemy import not_
+from sqlalchemy import and_
+from sqlalchemy.orm import aliased
+from sqlalchemy.orm import make_transient
+from sqlalchemy.orm import selectinload
+from flask_sqlalchemy.pagination import Pagination
+
+from app.logger import logger
+from app.datamgmt.case.case_db import case_db_save
+from app.db import db
+from app.datamgmt.filtering import combine_conditions
+from app.datamgmt.filtering import apply_custom_conditions
 from app.datamgmt.case.case_assets_db import create_asset
 from app.datamgmt.case.case_assets_db import set_ioc_links
 from app.datamgmt.case.case_assets_db import get_unspecified_analysis_status_id
@@ -37,18 +52,16 @@ from app.datamgmt.manage.manage_case_state_db import get_case_state_by_name
 from app.datamgmt.manage.manage_case_templates_db import get_case_template_by_id
 from app.datamgmt.manage.manage_case_templates_db import case_template_post_modifier
 from app.datamgmt.states import update_timeline_state
-from app.iris_engine.access_control.utils import ac_current_user_has_permission
+from app.blueprints.iris_user import iris_current_user
 from app.iris_engine.utils.common import parse_bf_date_format
 from app.models.cases import Cases
 from app.models.models import EventCategory
 from app.models.models import Tags
-from app.models.models import AssetsType
-from app.models.models import Comments
-from app.models.models import CaseAssets
-from app.models.models import alert_assets_association
-from app.models.models import alert_iocs_association
-from app.models.models import Ioc
-from app.models.models import Client
+from app.models.assets import AssetsType, alert_assets_association, CaseAssets
+from app.models.comments import Comments
+from app.models.iocs import alert_iocs_association
+from app.models.iocs import Ioc
+from app.models.customers import Client
 from app.models.alerts import Alert
 from app.models.alerts import AlertStatus
 from app.models.alerts import AlertCaseAssociation
@@ -56,11 +69,10 @@ from app.models.alerts import SimilarAlertsCache
 from app.models.alerts import AlertResolutionStatus
 from app.models.alerts import AlertSimilarity
 from app.models.alerts import Severity
-from app.models.authorization import Permissions
 from app.models.authorization import User
 from app.schema.marshables import EventSchema
 from app.util import add_obj_history_entry
-
+from app.datamgmt.db_operations import db_create, db_delete
 
 relationship_model_map = {
     'owner': User,
@@ -74,17 +86,6 @@ relationship_model_map = {
     'iocs': Ioc
 }
 
-RESTRICTED_USER_FIELDS = {
-    'password',
-    'mfa_secrets',
-    'webauthn_credentials',
-    'api_key',
-    'external_id',
-    'ctx_case',
-    'ctx_human_case',
-    'is_service_account'
-}
-
 
 def db_list_all_alerts():
     """
@@ -93,116 +94,32 @@ def db_list_all_alerts():
     return db.session.query(Alert).all()
 
 
-def build_condition(column, operator, value):
-    if hasattr(column, 'property') and hasattr(column.property, 'local_columns'):
-        # It's a relationship attribute
-        fk_cols = list(column.property.local_columns)
-        if operator in ['in', 'not_in']:
-            if len(fk_cols) == 1:
-                # Use the single FK column for the condition
-                fk_col = fk_cols[0]
-                if operator == 'in':
-                    return fk_col.in_(value)
-                else:
-                    return ~fk_col.in_(value)
-            else:
-                raise NotImplementedError(
-                    "in_() on a relationship with multiple FK columns not supported. Specify a direct column.")
-        else:
-            raise ValueError(
-                "Non-in operators on relationships require specifying a related model column, e.g., owner.id or assets.asset_name.")
-
-    # If we get here, 'column' should be an actual column, not a relationship.
-    if operator == 'not':
-        return column != value
-    elif operator == 'in':
-        return column.in_(value)
-    elif operator == 'not_in':
-        return ~column.in_(value)
-    elif operator == 'eq':
-        return column == value
-    elif operator == 'like':
-        return column.ilike(f"%{value}%")
-    else:
-        raise ValueError(f"Unsupported operator: {operator}")
-
-
-def combine_conditions(conditions, logical_operator):
-    if len(conditions) > 1:
-        if logical_operator == 'or':
-            return or_(*conditions)
-        elif logical_operator == 'not':
-            return not_(and_(*conditions))
-        else:  # Default to 'and'
-            return and_(*conditions)
-    elif conditions:
-        return conditions[0]
-    else:
-        return None
-
-
 def get_filtered_alerts(
-        start_date: str = None,
-        end_date: str = None,
-        source_start_date: str = None,
-        source_end_date: str = None,
-        title: str = None,
-        description: str = None,
-        status: int = None,
-        severity: int = None,
-        owner: int = None,
-        source: str = None,
-        tags: str = None,
-        case_id: int = None,
-        client: int = None,
-        classification: int = None,
-        alert_ids: List[int] = None,
-        assets: List[str] = None,
-        iocs: List[str] = None,
-        resolution_status: List[int] = None,
-        logical_operator: str = 'and',  # Logical operator: 'and', 'or', 'not'
-        page: int = 1,
-        per_page: int = 10,
-        sort: str = 'desc',
-        current_user_id: int = None,
-        source_reference=None,
-        custom_conditions: List[dict] = None):
-    """
-    Get a list of alerts that match the given filter conditions
-
-    args:
-        start_date (datetime): The start date of the alert creation time
-        end_date (datetime): The end date of the alert creation time
-        title (str): The title of the alert
-        description (str): The description of the alert
-        status (str): The status of the alert
-        severity (str): The severity of the alert
-        owner (str): The owner of the alert
-        source (str): The source of the alert
-        tags (str): The tags of the alert
-        case_id (int): The case id of the alert
-        client (int): The client id of the alert
-        classification (int): The classification id of the alert
-        alert_ids (int): The alert ids
-        assets (list): The assets of the alert
-        iocs (list): The iocs of the alert
-        resolution_status (list): The resolution status of the alert
-        logical_operator (str): Logical operator to combine conditions ('and', 'or', 'not')
-        page (int): The page number
-        per_page (int): The number of alerts per page
-        sort (str): The sort order
-        current_user_id (int): The ID of the current user
-        source_reference (str): Alert source reference
-        custom_conditions (list): Custom conditions to be applied (e.g., NOT client AND owner_id in [1,2,3])
-
-    returns:
-        list: A list of alerts that match the given filter conditions
-        ...
-        fields (List[str]): The list of fields to include in the output
-
-    returns:
-        dict: Dictionary with pagination info and list of serialized alerts
-    """
+        start_date: str,
+        end_date: str,
+        source_start_date: str,
+        source_end_date: str,
+        title: str,
+        description: str,
+        status: int,
+        severity: int,
+        owner: int,
+        source: str,
+        tags: str,
+        case_id: int,
+        client: int,
+        classification: int,
+        alert_ids: List[int],
+        assets: List[str],
+        iocs: List[str],
+        resolution_status: List[int],
+        page: int,
+        per_page: int,
+        sort: str,
+        user_identifier: int | None,
+        source_reference,
+        custom_conditions: List[dict]
+    ) -> Pagination:
     conditions = []
 
     if start_date is not None and end_date is not None:
@@ -271,8 +188,8 @@ def get_filtered_alerts(
         if isinstance(iocs, list):
             conditions.append(Alert.iocs.any(Ioc.ioc_value.in_(iocs)))
 
-    if current_user_id is not None and not ac_current_user_has_permission(Permissions.server_administrator):
-        clients_filters = get_user_clients_id(current_user_id)
+    if user_identifier is not None:
+        clients_filters = get_user_clients_id(user_identifier)
         if clients_filters is not None:
             conditions.append(Alert.alert_customer_id.in_(clients_filters))
 
@@ -293,56 +210,14 @@ def get_filtered_alerts(
             try:
                 custom_conditions = json.loads(custom_conditions)
             except:
-                app.app.logger.exception(f"Error parsing custom_conditions: {custom_conditions}")
+                logger.exception(f"Error parsing custom_conditions: {custom_conditions}")
                 return
 
-        # Keep track of which relationships we've already joined
-        joined_relationships = set()
+        query, conditions_tmp = apply_custom_conditions(query, Alert, custom_conditions, relationship_model_map)
+        conditions.extend(conditions_tmp)
 
-        for custom_condition in custom_conditions:
-            field_path = custom_condition['field']
-            operator = custom_condition['operator']
-            value = custom_condition['value']
-
-            # Check if we need to handle a related field
-            if '.' in field_path:
-                relationship_name, related_field_name = field_path.split('.', 1)
-
-                # Ensure the relationship name is known
-                if relationship_name not in relationship_model_map:
-                    raise ValueError(f"Unknown relationship: {relationship_name}")
-
-                if related_field_name in RESTRICTED_USER_FIELDS:
-                    app.logger.error(f"Access to the field '{related_field_name}' is restricted.")
-                    app.logger.error(f"Suspicious behavior detected for user {current_user.id} - {current_user.user}.")
-                    continue
-
-                related_model = relationship_model_map[relationship_name]
-
-                # Join the relationship if not already joined
-                if relationship_name not in joined_relationships:
-                    query = query.join(getattr(Alert, relationship_name))
-                    joined_relationships.add(relationship_name)
-
-                related_field = getattr(related_model, related_field_name, None)
-                if related_field is None:
-                    raise ValueError(
-                        f"Field '{related_field_name}' not found in related model '{related_model.__name__}'")
-
-                # Build the condition
-                condition = build_condition(related_field, operator, value)
-                conditions.append(condition)
-            else:
-                # Field belongs to Alert model
-                field = getattr(Alert, field_path, None)
-                if field is None:
-                    raise ValueError(f"Field '{field_path}' not found in Alert model")
-
-                condition = build_condition(field, operator, value)
-                conditions.append(condition)
-
-        # Combine conditions
-    combined_conditions = combine_conditions(conditions, logical_operator)
+    # Combine conditions
+    combined_conditions = combine_conditions(conditions, 'and')
 
     order_func = desc if sort == "desc" else asc
 
@@ -359,9 +234,8 @@ def get_filtered_alerts(
         return filtered_alerts
 
     except Exception as e:
-        app.app.logger.exception(f"Error getting alerts: {str(e)}")
+        logger.exception(f"Error getting alerts: {str(e)}")
         return None
-
 
 
 def add_alert(
@@ -396,13 +270,12 @@ def add_alert(
     alert.alert_owner_id = owner
 
     # Add the alert to the database
-    db.session.add(alert)
-    db.session.commit()
+    db_create(alert)
 
     return alert
 
 
-def get_alert_by_id(alert_id: int) -> Alert:
+def get_alert_by_id(alert_id: int) -> Optional[Alert]:
     """
     Get an alert from the database
 
@@ -460,20 +333,21 @@ def create_case_from_alerts(alerts: List[Alert], iocs_list: List[str], assets_li
             case_template_title_prefix = case_template.title_prefix
 
     # Create the case
+    # FIXME I think there is a bug, if no template_id is provided
     case = Cases(
         name=f"[ALERT]{case_template_title_prefix} "
              f"Merge of alerts {', '.join([str(alert.alert_id) for alert in alerts])}" if not case_title else
              f"{case_template_title_prefix} {case_title}",
-        description=f"*Alerts escalated by {current_user.name}*\n\n{escalation_note}"
+        description=f"*Alerts escalated by {iris_current_user.name}*\n\n{escalation_note}"
                     f"[Alerts link](/alerts?alert_ids={','.join([str(alert.alert_id) for alert in alerts])})",
         soc_id='',
         client_id=alerts[0].alert_customer_id,
-        user=current_user,
+        user=iris_current_user,
         classification_id=alerts[0].alert_classification_id,
         state_id=get_case_state_by_name('Open').state_id
     )
 
-    case.save()
+    case_db_save(case)
 
     for tag in case_tags.split(','):
         tag = Tags(tag_title=tag)
@@ -494,7 +368,7 @@ def create_case_from_alerts(alerts: List[Alert], iocs_list: List[str], assets_li
             for alert_ioc in alert.iocs:
                 if str(alert_ioc.ioc_uuid) == ioc_uuid:
 
-                    add_ioc(alert_ioc, current_user.id, case.case_id)
+                    add_ioc(alert_ioc, iris_current_user.id, case.case_id)
                     ioc_links.append(alert_ioc.ioc_id)
 
         # Add the assets to the case
@@ -505,7 +379,7 @@ def create_case_from_alerts(alerts: List[Alert], iocs_list: List[str], assets_li
 
                     asset = create_asset(asset=alert_asset,
                                          caseid=case.case_id,
-                                         user_id=current_user.id
+                                         user_id=iris_current_user.id
                                          )
                     asset.asset_uuid = alert_asset.asset_uuid
 
@@ -532,25 +406,19 @@ def create_case_from_alerts(alerts: List[Alert], iocs_list: List[str], assets_li
             }, session=db.session)
 
             event.case_id = case.case_id
-            event.user_id = current_user.id
+            event.user_id = iris_current_user.id
             event.event_added = datetime.utcnow()
 
             add_obj_history_entry(event, 'created')
 
             db.session.add(event)
-            update_timeline_state(caseid=case.case_id)
+            update_timeline_state(case.case_id)
 
             event.category = [unspecified_cat]
 
-            update_event_assets(event_id=event.event_id,
-                                caseid=case.case_id,
-                                assets_list=asset_links,
-                                iocs_list=ioc_links,
-                                sync_iocs_assets=False)
+            update_event_assets(event.event_id, case.case_id, asset_links, ioc_links, False)
 
-            update_event_iocs(event_id=event.event_id,
-                              caseid=case.case_id,
-                              iocs_list=ioc_links)
+            update_event_iocs(event.event_id, case.case_id, ioc_links)
 
     if template_id is not None and template_id != 0 and template_id != '':
         case, logs = case_template_post_modifier(case, template_id)
@@ -593,18 +461,18 @@ def create_case_from_alert(alert: Alert, iocs_list: List[str], assets_list: List
     # Create the case
     case = Cases(
         name=f"[ALERT]{case_template_title_prefix} {alert.alert_title}" if not case_title else f"{case_template_title_prefix} {case_title}",
-        description=f"*Alert escalated by {current_user.name}*\n\n{escalation_note}"
+        description=f"*Alert escalated by {iris_current_user.name}*\n\n{escalation_note}"
                     f"### Alert description\n\n{alert.alert_description}"
                     f"\n\n### IRIS alert link\n\n"
                     f"[<i class='fa-solid fa-bell'></i> #{alert.alert_id}](/alerts?alert_ids={alert.alert_id})",
         soc_id=alert.alert_id,
         client_id=alert.alert_customer_id,
-        user=current_user,
+        user=iris_current_user,
         classification_id=alert.alert_classification_id,
         state_id=get_case_state_by_name('Open').state_id
     )
 
-    case.save()
+    case_db_save(case)
 
     for tag in case_tags.split(','):
         tag = Tags(tag_title=tag)
@@ -646,15 +514,14 @@ def create_case_from_alert(alert: Alert, iocs_list: List[str], assets_list: List
 
                     new_alert_ioc.ioc_id = None
                     new_alert_ioc.ioc_uuid = ioc_uuid
-                    new_alert_ioc.user_id = current_user.id
+                    new_alert_ioc.user_id = iris_current_user.id
                     new_alert_ioc.case_id = case.case_id
 
-                    db.session.add(new_alert_ioc)
-                    db.session.commit()
+                    db_create(new_alert_ioc)
 
                     alert_ioc = new_alert_ioc
 
-                add_ioc(alert_ioc, current_user.id, case.case_id)
+                add_ioc(alert_ioc, iris_current_user.id, case.case_id)
                 ioc_links.append(alert_ioc.ioc_id)
 
     # Add the assets to the case
@@ -672,14 +539,13 @@ def create_case_from_alert(alert: Alert, iocs_list: List[str], assets_list: List
                     new_alert_asset.asset_id = None
                     new_alert_asset.asset_uuid = asset_uuid
 
-                    db.session.add(new_alert_asset)
-                    db.session.commit()
+                    db_create(new_alert_asset)
 
                     alert_asset = new_alert_asset
 
                 asset = create_asset(asset=alert_asset,
                                      caseid=case.case_id,
-                                     user_id=current_user.id
+                                     user_id=iris_current_user.id
                                      )
                 asset.asset_uuid = alert_asset.asset_uuid
 
@@ -708,25 +574,19 @@ def create_case_from_alert(alert: Alert, iocs_list: List[str], assets_list: List
         }, session=db.session)
 
         event.case_id = case.case_id
-        event.user_id = current_user.id
+        event.user_id = iris_current_user.id
         event.event_added = datetime.utcnow()
 
         add_obj_history_entry(event, 'created')
 
         db.session.add(event)
-        update_timeline_state(caseid=case.case_id)
+        update_timeline_state(case.case_id)
 
         event.category = [unspecified_cat]
 
-        update_event_assets(event_id=event.event_id,
-                            caseid=case.case_id,
-                            assets_list=asset_links,
-                            iocs_list=ioc_links,
-                            sync_iocs_assets=False)
+        update_event_assets(event.event_id, case.case_id, asset_links, ioc_links, False)
 
-        update_event_iocs(event_id=event.event_id,
-                          caseid=case.case_id,
-                          iocs_list=ioc_links)
+        update_event_iocs(event.event_id, case.case_id, ioc_links)
 
     if template_id is not None and template_id != 0 and template_id != '':
         case, logs = case_template_post_modifier(case, template_id)
@@ -758,7 +618,7 @@ def merge_alert_in_case(alert: Alert, case: Cases, iocs_list: List[str],
     if note:
         escalation_note = f"\n\n### Escalation note\n\n{note}\n\n"
 
-    case.description += f"\n\n*Alert [#{alert.alert_id}](/alerts?alert_ids={alert.alert_id}) escalated by {current_user.name}*\n\n{escalation_note}"
+    case.description += f"\n\n*Alert [#{alert.alert_id}](/alerts?alert_ids={alert.alert_id}) escalated by {iris_current_user.name}*\n\n{escalation_note}"
 
     for tag in case_tags.split(',') if case_tags else []:
         tag = Tags(tag_title=tag).save()
@@ -784,7 +644,7 @@ def merge_alert_in_case(alert: Alert, case: Cases, iocs_list: List[str],
                 if tmp_ioc:
                     alert_ioc = tmp_ioc
 
-                add_ioc(alert_ioc, current_user.id, case.case_id)
+                add_ioc(alert_ioc, iris_current_user.id, case.case_id)
                 ioc_links.append(alert_ioc.ioc_id)
 
     # Add the assets to the case
@@ -807,7 +667,7 @@ def merge_alert_in_case(alert: Alert, case: Cases, iocs_list: List[str],
                 else:
                     asset = create_asset(asset=alert_asset,
                                          caseid=case.case_id,
-                                         user_id=current_user.id
+                                         user_id=iris_current_user.id
                                          )
 
                     set_ioc_links(ioc_links, asset.asset_id)
@@ -836,25 +696,19 @@ def merge_alert_in_case(alert: Alert, case: Cases, iocs_list: List[str],
         }, session=db.session)
 
         event.case_id = case.case_id
-        event.user_id = current_user.id
+        event.user_id = iris_current_user.id
         event.event_added = datetime.utcnow()
 
         add_obj_history_entry(event, 'created')
 
         db.session.add(event)
-        update_timeline_state(caseid=case.case_id)
+        update_timeline_state(case.case_id)
 
         event.category = [unspecified_cat]
 
-        update_event_assets(event_id=event.event_id,
-                            caseid=case.case_id,
-                            assets_list=asset_links,
-                            iocs_list=ioc_links,
-                            sync_iocs_assets=False)
+        update_event_assets(event.event_id, case.case_id, asset_links, ioc_links, False)
 
-        update_event_iocs(event_id=event.event_id,
-                          caseid=case.case_id,
-                          iocs_list=ioc_links)
+        update_event_iocs(event.event_id, case.case_id, ioc_links)
 
     db.session.commit()
 
@@ -960,7 +814,7 @@ def search_alert_resolution_by_name(resolution_status_name: str, exact_match: Fa
         AlertResolutionStatus.resolution_status_name.ilike(f"%{resolution_status_name}%")).all()
 
 
-def cache_similar_alert(customer_id, assets, iocs, alert_id, creation_date):
+def cache_similar_alert(customer_id, assets: list[CaseAssets], iocs: list[Ioc], alert_id, creation_date):
     """
     Cache similar alerts
 
@@ -976,14 +830,14 @@ def cache_similar_alert(customer_id, assets, iocs, alert_id, creation_date):
 
     """
     for asset in assets:
-        cache_entry = SimilarAlertsCache(customer_id=customer_id, asset_name=asset['asset_name'],
-                                         asset_type_id=asset["asset_type_id"], alert_id=alert_id,
+        cache_entry = SimilarAlertsCache(customer_id=customer_id, asset_name=asset.asset_name,
+                                         asset_type_id=asset.asset_type_id, alert_id=alert_id,
                                          created_at=creation_date)
         db.session.add(cache_entry)
 
     for ioc in iocs:
-        cache_entry = SimilarAlertsCache(customer_id=customer_id, ioc_value=ioc['ioc_value'],
-                                         ioc_type_id=ioc['ioc_type_id'], alert_id=alert_id,
+        cache_entry = SimilarAlertsCache(customer_id=customer_id, ioc_value=ioc.ioc_value,
+                                         ioc_type_id=ioc.ioc_type_id, alert_id=alert_id,
                                          created_at=creation_date)
         db.session.add(cache_entry)
 
@@ -994,7 +848,6 @@ def register_related_alerts(new_alert=None, assets_list=None, iocs_list=None):
     """
     Register related alerts
     """
-
 
     # Step 1: Identify similar alerts based on title, assets, and IOCs
     similar_alerts = db.session.query(Alert).filter(
@@ -1073,6 +926,7 @@ def delete_related_alert_cache(alert_id):
     ).delete()
     db.session.commit()
 
+
 def delete_similar_alerts_cache(alert_ids: List[int]):
     """
     Delete the similar alerts cache
@@ -1140,8 +994,7 @@ def get_related_alerts(customer_id, assets, iocs, details=False):
     return similarities
 
 
-def get_related_alerts_details(customer_id, assets, iocs, open_alerts, closed_alerts, open_cases, closed_cases,
-                               days_back=30, number_of_results=200):
+def get_related_alerts_details(customer_id, assets, iocs, open_alerts, closed_alerts, days_back, number_of_results):
     """
     Get the details of the related alerts
 
@@ -1159,12 +1012,6 @@ def get_related_alerts_details(customer_id, assets, iocs, open_alerts, closed_al
     returns:
         dict: The details of the related alerts with matched assets and/or IOCs
     """
-    if not assets and not iocs:
-        return {
-            'nodes': [],
-            'edges': []
-        }
-
     asset_names = [(asset.asset_name, asset.asset_type_id) for asset in assets]
     ioc_values = [(ioc.ioc_value, ioc.ioc_type_id) for ioc in iocs]
 
@@ -1172,16 +1019,10 @@ def get_related_alerts_details(customer_id, assets, iocs, open_alerts, closed_al
     alert_status_filter = []
 
     if open_alerts:
-        open_alert_status_ids = AlertStatus.query.with_entities(
-            AlertStatus.status_id
-        ).filter(AlertStatus.status_name.in_(['New', 'Assigned', 'In progress', 'Pending', 'Unspecified'])).all()
-        alert_status_filter += [status_id[0] for status_id in open_alert_status_ids]
+        alert_status_filter += _get_open_alerts_status_identifiers()
 
     if closed_alerts:
-        closed_alert_status_ids = AlertStatus.query.with_entities(
-            AlertStatus.status_id
-        ).filter(AlertStatus.status_name.in_(['Closed', 'Merged', 'Escalated'])).all()
-        alert_status_filter += [status_id[0] for status_id in closed_alert_status_ids]
+        alert_status_filter += _get_closed_alerts_status_identifiers()
 
     conditions = and_(
         SimilarAlertsCache.customer_id == customer_id,
@@ -1196,16 +1037,13 @@ def get_related_alerts_details(customer_id, assets, iocs, open_alerts, closed_al
     if alert_status_filter:
         conditions = and_(conditions, Alert.alert_status_id.in_(alert_status_filter))
 
-    related_alerts = (
-        db.session.query(Alert, SimilarAlertsCache.asset_name, SimilarAlertsCache.ioc_value,
-                         asset_type_alias.asset_icon_not_compromised)
-        .join(SimilarAlertsCache, Alert.alert_id == SimilarAlertsCache.alert_id)
-        .outerjoin(Alert.resolution_status)
-        .outerjoin(asset_type_alias, SimilarAlertsCache.asset_type_id == asset_type_alias.asset_id)
-        .filter(conditions)
-        .limit(number_of_results)
-        .all()
-    )
+    related_alerts = db.session.query(
+        Alert, SimilarAlertsCache.asset_name, SimilarAlertsCache.ioc_value, asset_type_alias.asset_icon_not_compromised
+    ).join(
+        SimilarAlertsCache, Alert.alert_id == SimilarAlertsCache.alert_id
+    ).outerjoin(Alert.resolution_status).outerjoin(
+        asset_type_alias, SimilarAlertsCache.asset_type_id == asset_type_alias.asset_id
+    ).filter(conditions).limit(number_of_results).all()
 
     alerts_dict = {}
 
@@ -1220,167 +1058,77 @@ def get_related_alerts_details(customer_id, assets, iocs, open_alerts, closed_al
         if any(value == ioc_value for value, _ in ioc_values):
             alerts_dict[alert.alert_id]['iocs'].append(ioc_value)
 
-    nodes = []
-    edges = []
+    return alerts_dict
 
-    added_assets = set()
-    added_iocs = set()
-    added_cases = set()
 
-    for alert_id, alert_info in alerts_dict.items():
-        alert_color = '#c95029' if alert_info['alert'].status.status_name in ['Closed', 'Merged', 'Escalated'] else ''
-
-        alert_resolution_title = f'[{alert_info["alert"].resolution_status.resolution_status_name}]\n' if alert_info["alert"].resolution_status else ""
-
-        nodes.append({
-            'id': f'alert_{alert_id}',
-            'label': f'[Closed]{alert_resolution_title} {alert_info["alert"].alert_title}' if alert_color != '' else f'{alert_resolution_title}{alert_info["alert"].alert_title}',
-            'title': f'{alert_info["alert"].alert_description}',
-            'group': 'alert',
-            'shape': 'icon',
-            'icon': {
-                'face': 'FontAwesome',
-                'code': '\uf0f3',
-                'color': alert_color,
-                'weight': "bold"
-            },
-            'font': "12px verdana white" if current_user.in_dark_mode else ''
-        })
-
-        for asset_info in alert_info['assets']:
-            asset_id = asset_info['asset_name']
-
-            if asset_id not in added_assets:
-                nodes.append({
-                    'id': f'asset_{asset_id}',
-                    'label': asset_id,
-                    'group': 'asset',
-                    'shape': 'image',
-                    'image': '/static/assets/img/graph/' + asset_info['icon'],
-                    'font': "12px verdana white" if current_user.in_dark_mode else ''
-                })
-                added_assets.add(asset_id)
-
-            edges.append({
-                'from': f'alert_{alert_id}',
-                'to': f'asset_{asset_id}'
-            })
-
-        for ioc_value in alert_info['iocs']:
-            if ioc_value not in added_iocs:
-                nodes.append({
-                    'id': f'ioc_{ioc_value}',
-                    'label': ioc_value,
-                    'group': 'ioc',
-                    'shape': 'icon',
-                    'icon': {
-                        'face': 'FontAwesome',
-                        'code': '\ue4a8',
-                        'color': 'white' if current_user.in_dark_mode else '',
-                        'weight': "bold"
-                    },
-                    'font': "12px verdana white" if current_user.in_dark_mode else ''
-                })
-                added_iocs.add(ioc_value)
-
-            edges.append({
-                'from': f'alert_{alert_id}',
-                'to': f'ioc_{ioc_value}',
-                'dashes': True
-            })
-
-    if open_cases or closed_cases:
-        close_condition = None
-        if open_cases and not closed_cases:
-            close_condition = Cases.close_date.is_(None)
-        if closed_cases and not open_cases:
-            close_condition = Cases.close_date.isnot(None)
-        if open_cases and closed_cases:
-            close_condition = Cases.close_date.isnot(None) | Cases.close_date.is_(None)
-
-        matching_ioc_cases = (
-            db.session.query(Ioc)
-            .with_entities(Ioc.case_id, Ioc.ioc_value, Cases.name, Cases.close_date, Cases.description)
-            .join(Ioc.case)
-            .filter(
-                and_(
-                    and_(
-                        Ioc.ioc_value.in_(added_iocs),
-                        close_condition,
-                    ),
-                    Cases.client_id == customer_id
-                )
+def get_assets_with_cases(added_assets, customer_id, open_cases, closed_cases):
+    close_condition = _build_cases_closed_filter(open_cases, closed_cases)
+    matching_asset_cases = (
+        db.session.query(CaseAssets)
+        .with_entities(CaseAssets.case_id, CaseAssets.asset_name, Cases.name, Cases.close_date, Cases.description)
+        .join(CaseAssets.case)
+        .filter(
+            and_(
+                CaseAssets.asset_name.in_(added_assets),
+                close_condition,
+                Cases.client_id == customer_id
             )
-            .distinct()
-            .all()
         )
+        .distinct(CaseAssets.case_id)
+        .all()
+    )
+    return matching_asset_cases
 
-        matching_asset_cases = (
-            db.session.query(CaseAssets)
-            .with_entities(CaseAssets.case_id, CaseAssets.asset_name, Cases.name, Cases.close_date, Cases.description)
-            .join(CaseAssets.case)
-            .filter(
-                and_(
-                    and_(
-                        CaseAssets.asset_name.in_(added_assets),
-                        close_condition
-                    ),
-                    Cases.client_id == customer_id
-                )
+
+def get_iocs_with_cases(added_iocs, customer_id, open_cases, closed_cases):
+    close_condition = _build_cases_closed_filter(open_cases, closed_cases)
+
+    matching_ioc_cases = (
+        db.session.query(Ioc)
+        .with_entities(Ioc.case_id, Ioc.ioc_value, Cases.name, Cases.close_date, Cases.description)
+        .join(Ioc.case)
+        .filter(
+            and_(
+                Ioc.ioc_value.in_(added_iocs),
+                close_condition,
+                Cases.client_id == customer_id
             )
-            .distinct(CaseAssets.case_id)
-            .all()
         )
+        .distinct()
+        .all()
+    )
+    return matching_ioc_cases
 
-        cases_data = {}
 
-        for case_id, ioc_value, case_name, close_date, case_desc in matching_ioc_cases:
-            if case_id not in cases_data:
-                cases_data[case_id] = {'name': case_name, 'matching_ioc': [], 'matching_assets': [],
-                                       'close_date': close_date, 'description': case_desc}
-            cases_data[case_id]['matching_ioc'].append(ioc_value)
+def _build_cases_closed_filter(open_cases, closed_cases):
+    # OPEN
+    if open_cases and not closed_cases:
+        return Cases.close_date.is_(None)
+    # CLOSED
+    if closed_cases and not open_cases:
+        return Cases.close_date.isnot(None)
+    # ANY
+    if open_cases and closed_cases:
+        return Cases.close_date.isnot(None) | Cases.close_date.is_(None)
+    return None
 
-        for case_id, asset_name, case_name, close_date, case_desc in matching_asset_cases:
-            if case_id not in cases_data:
-                cases_data[case_id] = {'name': case_name, 'matching_ioc': [], 'matching_assets': [],
-                                       'close_date': close_date, 'description': case_desc}
-            cases_data[case_id]['matching_assets'].append(asset_name)
 
-        for case_id in cases_data:
-            if case_id not in added_cases:
-                nodes.append({
-                    'id': f'case_{case_id}',
-                    'label': f'[Closed] Case #{case_id}' if cases_data[case_id].get('close_date') else f'Case #{case_id}',
-                    'title': cases_data[case_id].get("description"),
-                    'group': 'case',
-                    'shape': 'icon',
-                    'icon': {
-                        'face': 'FontAwesome',
-                        'code': '\uf0b1',
-                        'color': '#c95029' if cases_data[case_id].get('close_date') else '#4cba4f'
-                    },
-                    'font': "12px verdana white" if current_user.in_dark_mode else ''
-                })
-                added_cases.add(case_id)
+def _get_closed_alerts_status_identifiers():
+    return _get_alerts_status_identifiers(['Closed', 'Merged', 'Escalated'])
 
-            for ioc_value in cases_data[case_id]['matching_ioc']:
-                edges.append({
-                    'from': f'ioc_{ioc_value}',
-                    'to': f'case_{case_id}',
-                    'dashes': True
-                })
 
-            for asset_name in cases_data[case_id]['matching_assets']:
-                edges.append({
-                    'from': f'asset_{asset_name}',
-                    'to': f'case_{case_id}',
-                    'dashes': True
-                })
+def _get_open_alerts_status_identifiers():
+    return _get_alerts_status_identifiers(['New', 'Assigned', 'In progress', 'Pending', 'Unspecified'])
 
-    return {
-        'nodes': nodes,
-        'edges': edges
-    }
+
+def _get_alerts_status_identifiers(status_names):
+    open_alert_status_ids = AlertStatus.query.with_entities(
+        AlertStatus.status_id
+    ).filter(AlertStatus.status_name.in_(status_names)).all()
+    result = []
+    for status_id in open_alert_status_ids:
+        result.append(status_id)
+    return result
 
 
 def get_alert_comments(alert_id: int) -> List[Comments]:
@@ -1396,7 +1144,7 @@ def get_alert_comments(alert_id: int) -> List[Comments]:
     return Comments.query.filter(Comments.comment_alert_id == alert_id).all()
 
 
-def get_alert_comment(alert_id: int, comment_id: int) -> Comments:
+def get_alert_comment(alert_id: int, comment_id: int) -> Optional[Comments]:
     """
     Get a comment of an alert
 
@@ -1413,7 +1161,7 @@ def get_alert_comment(alert_id: int, comment_id: int) -> Comments:
     ).first()
 
 
-def delete_alert_comment(comment_id: int, alert_id: int) -> Tuple[bool, str]:
+def delete_alert_comment(user_identifier, comment_id: int, alert_id: int) -> Tuple[bool, str]:
     """
     Delete a comment of an alert
 
@@ -1422,14 +1170,13 @@ def delete_alert_comment(comment_id: int, alert_id: int) -> Tuple[bool, str]:
     """
     comment = Comments.query.filter(
         Comments.comment_id == comment_id,
-        Comments.comment_user_id == current_user.id,
+        Comments.comment_user_id == user_identifier,
         Comments.comment_alert_id == alert_id
     ).first()
     if not comment:
         return False, "You are not allowed to delete this comment"
 
-    db.session.delete(comment)
-    db.session.commit()
+    db_delete(comment)
 
     return True, "Comment deleted successfully"
 
@@ -1548,7 +1295,7 @@ def delete_alerts(alert_ids: List[int]) -> tuple[bool, str]:
 
     except Exception as e:
         db.session.rollback()
-        app.logger.exception(str(e))
+        logger.exception(str(e))
         return False, "Server side error"
 
     return True, ""
@@ -1566,3 +1313,6 @@ def get_alert_status_by_name(name: str) -> AlertStatus:
     """
     return AlertStatus.query.filter(AlertStatus.status_name == name).first()
 
+
+def delete_alert(alert):
+    db_delete(alert)

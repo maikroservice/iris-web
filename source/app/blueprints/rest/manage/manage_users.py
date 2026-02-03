@@ -21,11 +21,12 @@ import marshmallow
 import traceback
 from flask import Blueprint
 from flask import request
-from flask_login import current_user
 
 from app import app
-from app import db
+from app.db import db
 from app.blueprints.rest.parsing import parse_comma_separated_identifiers
+from app.blueprints.rest.endpoints import endpoint_deprecated
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.manage.manage_users_db import add_case_access_to_user
 from app.datamgmt.manage.manage_users_db import update_user_customers
 from app.datamgmt.manage.manage_users_db import get_filtered_users
@@ -44,6 +45,7 @@ from app.models.authorization import Permissions
 from app.schema.marshables import UserSchema
 from app.schema.marshables import BasicUserSchema
 from app.schema.marshables import UserFullSchema
+from app.business.groups import groups_exist
 
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.access_controls import ac_api_return_access_denied
@@ -107,6 +109,7 @@ def manage_users_filter():
 
 
 @manage_users_rest_blueprint.route('/manage/users/add', methods=['POST'])
+@endpoint_deprecated('POST', '/api/v2/manage/users')
 @ac_api_requires(Permissions.server_administrator)
 def add_user():
     try:
@@ -117,11 +120,11 @@ def add_user():
         jsdata['user_id'] = 0
         jsdata['active'] = jsdata.get('active', True)
         cuser = user_schema.load(jsdata, partial=True)
-        user = create_user(user_name=cuser.name,
-                           user_login=cuser.user,
-                           user_email=cuser.email,
-                           user_password=cuser.password,
-                           user_active=jsdata.get('active'),
+        user = create_user(cuser.name,
+                           cuser.user,
+                           cuser.password,
+                           cuser.email,
+                           jsdata.get('active'),
                            user_is_service_account=cuser.is_service_account)
 
         udata = user_schema.dump(user)
@@ -129,7 +132,7 @@ def add_user():
         del udata['user_password']
 
         if cuser:
-            track_activity("created user {}".format(user.user),  ctx_less=True)
+            track_activity(f"created user {user.user}", ctx_less=True)
             return response_success("user created", data=udata)
 
         return response_error("Unable to create user for internal reasons")
@@ -139,6 +142,7 @@ def add_user():
 
 
 @manage_users_rest_blueprint.route('/manage/users/<int:cur_id>', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/manage/users/{identifier}')
 @ac_api_requires(Permissions.server_administrator)
 def view_user(cur_id):
 
@@ -167,8 +171,12 @@ def manage_user_group_(cur_id):
     if not user:
         return response_error("Invalid user ID")
 
-    update_user_groups(user_id=cur_id,
-                       groups=request.json.get('groups_membership'))
+    groups = request.json.get('groups_membership')
+    for group_identifier in groups:
+        if not groups_exist(group_identifier):
+            return response_error(f'No group with identifier {group_identifier}')
+
+    update_user_groups(cur_id, groups)
 
     track_activity(f"groups membership of user {cur_id} updated", ctx_less=True)
 
@@ -259,7 +267,7 @@ def manage_user_cac_delete_cases(cur_id):
         db.session.commit()
 
     except Exception as e:
-        log.error("Error while removing cases access from user: {}".format(e))
+        log.error(f"Error while removing cases access from user: {e}")
         log.error(traceback.format_exc())
         return response_error(msg=str(e))
 
@@ -275,6 +283,7 @@ def manage_user_cac_delete_cases(cur_id):
 
 
 @manage_users_rest_blueprint.route('/manage/users/update/<int:cur_id>', methods=['POST'])
+@endpoint_deprecated('PUT', '/api/v2/manage/users/{identifier}')
 @ac_api_requires(Permissions.server_administrator)
 def update_user_api(cur_id):
 
@@ -291,12 +300,11 @@ def update_user_api(cur_id):
         jsdata = request.get_json()
         jsdata['user_id'] = cur_id
         cuser = user_schema.load(jsdata, instance=user, partial=True)
-        update_user(password=jsdata.get('user_password'),
-                    user=user)
+        update_user(user, password=jsdata.get('user_password'))
         db.session.commit()
 
         if cuser:
-            track_activity("updated user {}".format(user.user), ctx_less=True)
+            track_activity(f"updated user {user.user}", ctx_less=True)
             return response_success("User updated", data=user_schema.dump(user))
 
         return response_error("Unable to update user for internal reasons")
@@ -316,7 +324,7 @@ def deactivate_user_api(cur_id):
     if protect_demo_mode_user(user):
         return ac_api_return_access_denied()
 
-    if current_user.id == cur_id:
+    if iris_current_user.id == cur_id:
         return response_error('We do not recommend deactivating yourself for obvious reasons')
 
     user.active = False
@@ -367,6 +375,7 @@ def renew_user_api_key(cur_id):
 
 
 @manage_users_rest_blueprint.route('/manage/users/delete/<int:cur_id>', methods=['POST'])
+@endpoint_deprecated('DELETE', '/api/v2/manage/users/{identifier}')
 @ac_api_requires(Permissions.server_administrator)
 def view_delete_user(cur_id):
 
@@ -380,18 +389,18 @@ def view_delete_user(cur_id):
             return ac_api_return_access_denied()
 
         if user.active is True:
-            track_activity(message="tried to delete active user ID {}".format(cur_id), ctx_less=True)
+            track_activity(message=f"tried to delete active user ID {cur_id}", ctx_less=True)
             return response_error("Cannot delete active user")
 
         delete_user(user.id)
 
-        track_activity(message="deleted user ID {}".format(cur_id), ctx_less=True)
-        return response_success("Deleted user ID {}".format(cur_id))
+        track_activity(message=f"deleted user ID {cur_id}", ctx_less=True)
+        return response_success(f"Deleted user ID {cur_id}")
 
     except Exception as e:
         print(e)
         db.session.rollback()
-        track_activity(message="tried to delete active user ID {}".format(cur_id), ctx_less=True)
+        track_activity(message=f"tried to delete active user ID {cur_id}", ctx_less=True)
         return response_error("Cannot delete active user")
 
 

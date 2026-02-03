@@ -12,7 +12,7 @@ from app.alembic.alembic_utils import _has_table, index_exists
 
 # revision identifiers, used by Alembic.
 revision = 'd5a720d1b99b'
-down_revision = '3715d4fac4de'
+down_revision = '11aa5b725b8e'
 branch_labels = None
 depends_on = None
 
@@ -28,7 +28,7 @@ def upgrade():
             op.create_index('idx_alerts_source_event_time', 'alerts', ['alert_source_event_time'])
         if not index_exists('alerts', 'idx_alerts_customer_id'):
             op.create_index('idx_alerts_customer_id', 'alerts', ['alert_customer_id'])
-        if not index_exists('alerts', 'alert_source_ref'):
+        if not index_exists('alerts', 'idx_alert_source_ref'):
             op.create_index('idx_alert_source_ref', 'alerts', ['alert_source_ref'])
 
     # Adding indexes to the Ioc table
@@ -61,4 +61,3 @@ def downgrade():
 
     # Drop AlertSimilarity table
     op.drop_table('alert_similarity')
-

@@ -30,6 +30,7 @@ from flask import url_for
 from flask import request
 from flask import render_template
 from flask import session
+from flask import g
 from flask_login import current_user
 from flask_login import login_user
 from flask_wtf import FlaskForm
@@ -40,26 +41,51 @@ from werkzeug.utils import redirect
 from app import TEMPLATE_PATH
 
 from app import app
-from app import db
 from app.blueprints.responses import response_error
+from app.business.auth import validate_auth_token
+from app.business.auth import update_session_current_case
 from app.datamgmt.case.case_db import get_case
-from app.datamgmt.manage.manage_access_control_db import user_has_client_access
+from app.business.access_controls import access_controls_user_has_customer_access
 from app.datamgmt.manage.manage_users_db import get_user
-from app.iris_engine.access_control.utils import ac_fast_check_user_has_case_access
+from app.blueprints.iris_user import iris_current_user
+from app.business.access_controls import ac_fast_check_user_has_case_access
 from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
 from app.iris_engine.utils.tracker import track_activity
-from app.models.cases import Cases
 from app.models.authorization import Permissions
+from app.models.authorization import ac_flag_match_mask
 from app.models.authorization import CaseAccessLevel
 
 
 def _user_has_at_least_a_required_permission(permissions: list[Permissions]):
     """
-        Returns true as soon as the user has at least one permission in the list of permissions
-        Returns true if the list of required permissions is empty
+    Returns true if the user has at least one of the required permissions
+    Works with both session-based and token-based authentication
     """
     if not permissions:
         return True
+
+    # For token-based authentication
+    if hasattr(g, 'auth_token_user_id'):
+        # Use cached permissions from token if available
+        if hasattr(g, 'auth_user_permissions'):
+            user_permissions = g.auth_user_permissions
+        else:
+            # Lazy load permissions only once per request
+            user = get_user(g.auth_token_user_id)
+            if not user:
+                return False
+
+            user_permissions = ac_get_effective_permissions_of_user(user)
+            g.auth_user_permissions = user_permissions  # Cache for this request
+
+        for permission in permissions:
+            if user_permissions & permission.value:
+                return True
+        return False
+
+    # For session-based authentication
+    if 'permissions' not in session:
+        session['permissions'] = ac_get_effective_permissions_of_user(current_user)
 
     for permission in permissions:
         if session['permissions'] & permission.value:
@@ -143,8 +169,8 @@ def _handle_no_cid_required(no_cid_required):
 
 def _update_denied_case(caseid):
     session['current_case'] = {
-        'case_name': "{} to #{}".format("Access denied", caseid),
-        'case_info': "",
+        'case_name': f'Access denied to #{caseid}',
+        'case_info': '',
         'case_id': caseid,
         'access': '<i class="ml-2 text-danger mt-1 fa-solid fa-ban"></i>'
     }
@@ -155,8 +181,8 @@ def _update_current_case(caseid, restricted_access):
         case = get_case(caseid)
         if case:
             session['current_case'] = {
-                'case_name': "{}".format(case.name),
-                'case_info': "(#{} - {})".format(caseid, case.client.name),
+                'case_name': case.name,
+                'case_info': f'(#{caseid} - {case.client.name})',
                 'case_id': caseid,
                 'access': restricted_access
             }
@@ -182,7 +208,7 @@ def _get_case_access(request_data, access_level, no_cid_required=False):
     if ctmp is not None:
         return redir, ctmp, has_access
 
-    eaccess_level = ac_fast_check_user_has_case_access(current_user.id, caseid, access_level)
+    eaccess_level = ac_fast_check_user_has_case_access(iris_current_user.id, caseid, access_level)
     if eaccess_level is None and access_level:
         _update_denied_case(caseid)
         return redir, caseid, False
@@ -218,8 +244,8 @@ def _is_csrf_token_valid():
 
 def _ac_return_access_denied(caseid: int = None):
     error_uuid = uuid.uuid4()
-    log.warning(f"Access denied to case #{caseid} for user ID {current_user.id}. Error {error_uuid}")
-    return render_template('pages/error-403.html', user=current_user, caseid=caseid, error_uuid=error_uuid,
+    log.warning(f"Access denied to case #{caseid} for user ID {iris_current_user.id}. Error {error_uuid}")
+    return render_template('pages/error-403.html', user=iris_current_user, caseid=caseid, error_uuid=error_uuid,
                            template_folder=TEMPLATE_PATH), 403
 
 
@@ -251,11 +277,11 @@ def get_case_access_from_api(request_data, access_level):
     redir, caseid, has_access = _get_caseid_from_request_data(request_data, False)
     redir = False
 
-    if not hasattr(current_user, 'id'):
+    if not hasattr(iris_current_user, 'id'):
         # Anonymous request, deny access
         return False, 1, False
 
-    eaccess_level = ac_fast_check_user_has_case_access(current_user.id, caseid, access_level)
+    eaccess_level = ac_fast_check_user_has_case_access(iris_current_user.id, caseid, access_level)
     if eaccess_level is None and access_level:
         return redir, caseid, False
 
@@ -316,24 +342,45 @@ def ac_requires(*permissions, no_cid_required=False):
     return inner_wrap
 
 
-def ac_api_requires(*permissions):
-    def inner_wrap(f):
-        @wraps(f)
-        def wrap(*args, **kwargs):
-            if not _is_csrf_token_valid():
+def wrap_with_permission_checks(f, *permissions):
+    @wraps(f)
+    def wrap(*args, **kwargs):
+        if not _is_csrf_token_valid():
+            if 'auth_token_user_id' not in g:
                 return response_error('Invalid CSRF token')
 
-            if not is_user_authenticated(request):
-                return response_error('Authentication required', status=401)
+        if not is_user_authenticated(request):
+            return response_error('Authentication required', status=401)
 
+        # Set the user for token-based authentication
+        if hasattr(g, 'auth_token_user_id'):
+            user = get_user(g.auth_token_user_id)
+            if not user:
+                return response_error('User not found', status=404)
+
+            # Create a compatibility layer for token auth
+            g.token_user = user
+
+            # Check permissions
+            if not _user_has_at_least_a_required_permission(permissions):
+                return response_error('Permission denied', status=403)
+        else:
+            # Session-based auth - use the normal approach
             if 'permissions' not in session:
                 session['permissions'] = ac_get_effective_permissions_of_user(current_user)
 
             if not _user_has_at_least_a_required_permission(permissions):
                 return response_error('Permission denied', status=403)
 
-            return f(*args, **kwargs)
-        return wrap
+        return f(*args, **kwargs)
+
+    return wrap
+
+
+def ac_api_requires(*permissions):
+    def inner_wrap(f):
+        return wrap_with_permission_checks(f, *permissions)
+
     return inner_wrap
 
 
@@ -342,7 +389,7 @@ def ac_requires_client_access():
         @wraps(f)
         def wrap(*args, **kwargs):
             client_id = kwargs.get('client_id')
-            if not user_has_client_access(current_user.id, client_id):
+            if not ac_current_user_has_customer_access(client_id):
                 return _ac_return_access_denied()
 
             return f(*args, **kwargs)
@@ -357,25 +404,24 @@ def ac_socket_requires(*access_level):
             if not is_user_authenticated(request):
                 return redirect(not_authenticated_redirection_url(request.full_path))
 
+            chan_id = args[0].get('channel')
+            if chan_id:
+                case_id = int(chan_id.replace('case-', '').split('-')[0])
             else:
-                chan_id = args[0].get('channel')
-                if chan_id:
-                    case_id = int(chan_id.replace('case-', '').split('-')[0])
-                else:
-                    return _ac_return_access_denied(caseid=0)
+                return _ac_return_access_denied(caseid=0)
 
-                access = ac_fast_check_user_has_case_access(current_user.id, case_id, access_level)
-                if not access:
-                    return _ac_return_access_denied(caseid=case_id)
+            access = ac_fast_check_user_has_case_access(iris_current_user.id, case_id, access_level)
+            if not access:
+                return _ac_return_access_denied(caseid=case_id)
 
-                return f(*args, **kwargs)
+            return f(*args, **kwargs)
 
         return wrap
     return inner_wrap
 
 
 def ac_api_return_access_denied(caseid: int = None):
-    user_id = current_user.id if hasattr(current_user, 'id') else 'Anonymous'
+    user_id = iris_current_user.id if hasattr(iris_current_user, 'id') else 'Anonymous'
     error_uuid = uuid.uuid4()
     log.warning(f"EID {error_uuid} - Access denied with case #{caseid} for user ID {user_id} "
                 f"accessing URI {request.full_path}")
@@ -392,7 +438,7 @@ def ac_api_requires_client_access():
         @wraps(f)
         def wrap(*args, **kwargs):
             client_id = kwargs.get('client_id')
-            if not user_has_client_access(current_user.id, client_id):
+            if not ac_current_user_has_customer_access(client_id):
                 return response_error("Permission denied", status=403)
 
             return f(*args, **kwargs)
@@ -401,28 +447,15 @@ def ac_api_requires_client_access():
 
 
 def _authenticate_with_email(user_email):
-    user = get_user(user_email, id_key="email")
+    user = get_user(user_email, id_key='email')
     if not user:
         log.error(f'User with email {user_email} is not registered in the IRIS')
         return False
 
     login_user(user)
-    track_activity(f"User '{user.id}' successfully logged-in", ctx_less=True)
+    track_activity(f'User "{user.id}" successfully logged-in', ctx_less=True)
 
-    caseid = user.ctx_case
-    session['permissions'] = ac_get_effective_permissions_of_user(user)
-
-    if caseid is None:
-        case = Cases.query.order_by(Cases.case_id).first()
-        user.ctx_case = case.case_id
-        user.ctx_human_case = case.name
-        db.session.commit()
-
-    session['current_case'] = {
-        'case_name': user.ctx_human_case,
-        'case_info': "",
-        'case_id': user.ctx_case
-    }
+    update_session_current_case(user)
 
     return True
 
@@ -457,9 +490,8 @@ def _oidc_proxy_authentication_process(incoming_request: Request):
                 user_email = response_json.get("sub")
                 return _authenticate_with_email(user_email=user_email)
 
-            else:
-                log.info("USER IS NOT AUTHENTICATED")
-                return False
+            log.info("USER IS NOT AUTHENTICATED")
+            return False
 
     elif app.config.get("AUTHENTICATION_TOKEN_VERIFY_MODE") == 'signature':
         # Use the JWKS urls provided by the OIDC discovery to fetch the signing keys
@@ -497,7 +529,32 @@ def _oidc_proxy_authentication_process(incoming_request: Request):
 
 
 def _local_authentication_process(incoming_request: Request):
-    return current_user.is_authenticated
+    return iris_current_user.is_authenticated
+
+
+def _token_authentication_process(incoming_request: Request):
+    """
+    Process authentication using an Authorization header with Bearer token
+    """
+    auth_header = incoming_request.headers.get('Authorization', '')
+    if not auth_header.startswith('Bearer '):
+        return False
+
+    parts = auth_header.split(' ')
+    if len(parts) < 2:
+        return False
+
+    token = parts[1]
+    user_data = validate_auth_token(token)
+
+    if not user_data:
+        return False
+
+    # Store user data for later use
+    g.auth_user = user_data
+    g.auth_token_user_id = user_data['user_id']
+
+    return True
 
 
 def is_user_authenticated(incoming_request: Request):
@@ -508,6 +565,9 @@ def is_user_authenticated(incoming_request: Request):
         "oidc": _local_authentication_process,
     }
 
+    if _token_authentication_process(incoming_request):
+        return True
+
     return authentication_mapper.get(app.config.get("AUTHENTICATION_TYPE"))(incoming_request)
 
 
@@ -517,3 +577,45 @@ def is_authentication_oidc():
 
 def is_authentication_ldap():
     return app.config.get('AUTHENTICATION_TYPE') == "ldap"
+
+
+def ac_fast_check_current_user_has_case_access(cid, access_level):
+    return ac_fast_check_user_has_case_access(iris_current_user.id, cid, access_level)
+
+
+def _get_current_permissions_mask():
+    # Token-based authentication
+    if hasattr(g, 'auth_token_user_id'):
+        if hasattr(g, 'auth_user_permissions'):
+            return g.auth_user_permissions
+
+        user = get_user(g.auth_token_user_id)
+        if not user:
+            return 0
+
+        perms = ac_get_effective_permissions_of_user(user)
+        g.auth_user_permissions = perms
+        return perms
+
+    # Session-based authentication
+    perms = session.get('permissions')
+    if perms is None and current_user.is_authenticated:
+        perms = ac_get_effective_permissions_of_user(current_user)
+        session['permissions'] = perms
+
+    return perms or 0
+
+
+def ac_current_user_has_permission(permission):
+    """
+    Return True if current user has permission
+    """
+    return ac_flag_match_mask(_get_current_permissions_mask(), permission.value)
+
+
+def ac_current_user_has_customer_access(customer_identifier):
+    return access_controls_user_has_customer_access(
+        iris_current_user,
+        _get_current_permissions_mask(),
+        customer_identifier
+    )

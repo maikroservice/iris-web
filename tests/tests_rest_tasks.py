@@ -83,7 +83,7 @@ class TestsRestTasks(TestCase):
         case_identifier = self._subject.create_dummy_case()
         body = {'task_assignees_id': [], 'task_description': '', 'task_status_id': 1, 'task_tags': '', 'task_title': 'dummy title',
                 'custom_attributes': {}}
-        self._subject.create(f'/api/v2/cases/{case_identifier}/tasks',  body)
+        self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body)
         test = self._subject.delete(f'/api/v2/cases/{case_identifier}/tasks/{_IDENTIFIER_FOR_NONEXISTENT_OBJECT}')
         self.assertEqual(404, test.status_code)
 
@@ -92,7 +92,7 @@ class TestsRestTasks(TestCase):
         user = self._subject.create_dummy_user()
         body = {'task_assignees_id': [user.get_identifier()], 'task_description': '', 'task_status_id': 1, 'task_tags': '', 'task_title': 'dummy title',
                 'custom_attributes': {}}
-        self._subject.create(f'/api/v2/cases/{case_identifier}/tasks',  body)
+        self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body)
         response = user.get('/user/tasks/list')
         self.assertEqual(200, response.status_code)
 
@@ -101,11 +101,11 @@ class TestsRestTasks(TestCase):
         user = self._subject.create_dummy_user()
         body = {'task_assignees_id': [user.get_identifier()], 'task_description': '', 'task_status_id': 1, 'task_tags': '', 'task_title': 'dummy title',
                 'custom_attributes': {}}
-        self._subject.create(f'/api/v2/cases/{case_identifier}/tasks',  body)
+        self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body)
         response = user.get('/user/tasks/list').json()
         self.assertEqual(f'#{case_identifier} - case name', response['data']['tasks'][0]['task_case'])
 
-    def test_update_task_should_not_fail(self):
+    def test_update_task_should_return_200(self):
         case_identifier = self._subject.create_dummy_case()
         body = {'task_assignees_id': [], 'task_status_id': 1, 'task_title': 'dummy title'}
         response = self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body).json()
@@ -143,6 +143,15 @@ class TestsRestTasks(TestCase):
                                         {'task_title': 'new title', 'task_status_id': 1, 'task_assignees_id': []}).json()
         self.assertEqual('new title', response['task_title'])
 
+    def test_update_task_should_update_status_id(self):
+        case_identifier = self._subject.create_dummy_case()
+        body = {'task_assignees_id': [], 'task_status_id': 1, 'task_title': 'dummy title'}
+        response = self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body).json()
+        identifier = response['id']
+        response = self._subject.update(f'/api/v2/cases/{case_identifier}/tasks/{identifier}',
+                                        {'task_title': 'dummy title', 'task_status_id': 2, 'task_assignees_id': []}).json()
+        self.assertEqual(2, response['task_status_id'])
+
     def test_get_tasks_should_return_200(self):
         case_identifier = self._subject.create_dummy_case()
         response = self._subject.get(f'/api/v2/cases/{case_identifier}/tasks')
@@ -168,7 +177,7 @@ class TestsRestTasks(TestCase):
         self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body).json()
         body = {'task_assignees_id': [], 'task_status_id': 1, 'task_title': 'task3'}
         self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body).json()
-        response = self._subject.get(f'/api/v2/cases/{case_identifier}/tasks', { 'per_page': 2 }).json()
+        response = self._subject.get(f'/api/v2/cases/{case_identifier}/tasks', {'per_page': 2}).json()
         self.assertEqual(2, len(response['data']))
 
     def test_get_tasks_should_return_current_page(self):
@@ -179,7 +188,7 @@ class TestsRestTasks(TestCase):
         self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body).json()
         body = {'task_assignees_id': [], 'task_status_id': 1, 'task_title': 'task3'}
         self._subject.create(f'/api/v2/cases/{case_identifier}/tasks', body).json()
-        response = self._subject.get(f'/api/v2/cases/{case_identifier}/tasks', { 'page': 2, 'per_page': 2 }).json()
+        response = self._subject.get(f'/api/v2/cases/{case_identifier}/tasks', {'page': 2, 'per_page': 2}).json()
         self.assertEqual(2, response['current_page'])
 
     def test_get_tasks_should_return_correct_task_uuid(self):

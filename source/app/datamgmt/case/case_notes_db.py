@@ -15,61 +15,66 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
-from flask_login import current_user
-from sqlalchemy import and_
 
-from app import db
+from sqlalchemy import and_
+from sqlalchemy import or_
+from sqlalchemy.exc import IntegrityError
+from datetime import datetime
+from flask_sqlalchemy.pagination import Pagination
+
+from app.datamgmt.db_operations import db_create
+from app.datamgmt.db_operations import db_delete
+from app.db import db
+from app.datamgmt.persistence_error import PersistenceError
 from app.datamgmt.manage.manage_attribute_db import get_default_custom_attributes
 from app.datamgmt.states import update_notes_state
-from app.models.models import Comments
+from app.models.comments import Comments
+from app.models.comments import NotesComments
 from app.models.models import NoteDirectory
 from app.models.models import NoteRevisions
 from app.models.models import Notes
-from app.models.models import NotesComments
 from app.models.models import NotesGroup
 from app.models.models import NotesGroupLink
 from app.models.authorization import User
+from app.models.cases import Cases
+from app.models.customers import Client
+from app.models.pagination_parameters import PaginationParameters
+from app.datamgmt.filtering import paginate
 
 
-def get_note(note_id, caseid=None):
+def get_note(note_id):
     note = Notes.query.filter(and_(
-        Notes.note_id == note_id,
-        Notes.note_case_id == caseid
+        Notes.note_id == note_id
     )).first()
 
     return note
 
 
-def get_directory(directory_id, caseid):
-    directory = NoteDirectory.query.filter(and_(
-        NoteDirectory.id == directory_id,
-        NoteDirectory.case_id == caseid
+def get_directory(directory_id):
+    return NoteDirectory.query.filter(and_(
+        NoteDirectory.id == directory_id
     )).first()
 
-    return directory
 
-
-def delete_directory(directory, caseid):
+def delete_directory(directory: NoteDirectory):
     # Proceed to delete directory, but remove all associated notes and subdirectories recursively
     if directory:
         # Delete all notes in the directory
         for note in directory.notes:
-            delete_note(note.note_id, caseid)
+            delete_note(note.note_id, directory.case_id)
 
         # Delete all subdirectories
         for subdirectory in directory.subdirectories:
-            delete_directory(subdirectory, caseid)
+            delete_directory(subdirectory)
 
-        # Delete the directory
-        db.session.delete(directory)
-        db.session.commit()
+        db_delete(directory)
 
         return True
 
     return False
 
 
-def get_note_raw(note_id, caseid):
+def get_note_raw(note_id, caseid) -> Notes:
     note = Notes.query.filter(
         Notes.note_case_id == caseid,
         Notes.note_id == note_id
@@ -77,29 +82,42 @@ def get_note_raw(note_id, caseid):
     return note
 
 
-def delete_note(note_id, caseid):
+def delete_note(note_identifier, case_identifier):
     with db.session.begin_nested():
         NotesGroupLink.query.filter(and_(
-            NotesGroupLink.note_id == note_id,
-            NotesGroupLink.case_id == caseid
+            NotesGroupLink.note_id == note_identifier,
+            NotesGroupLink.case_id == case_identifier
         )).delete()
 
         com_ids = NotesComments.query.with_entities(
             NotesComments.comment_id
         ).filter(
-            NotesComments.comment_note_id == note_id
+            NotesComments.comment_note_id == note_identifier
         ).all()
 
         com_ids = [c.comment_id for c in com_ids]
         NotesComments.query.filter(NotesComments.comment_id.in_(com_ids)).delete()
 
-        NoteRevisions.query.filter(NoteRevisions.note_id == note_id).delete()
+        NoteRevisions.query.filter(NoteRevisions.note_id == note_identifier).delete()
 
         Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
 
-        Notes.query.filter(Notes.note_id == note_id).delete()
+        Notes.query.filter(Notes.note_id == note_identifier).delete()
 
-        update_notes_state(caseid=caseid)
+        update_notes_state(caseid=case_identifier)
+
+
+def delete_notes_comments_in_case(case_identifier):
+    com_ids = NotesComments.query.with_entities(
+        NotesComments.comment_id
+    ).join(Notes).filter(
+        NotesComments.comment_note_id == Notes.note_id,
+        Notes.note_case_id == case_identifier
+    ).all()
+
+    com_ids = [c.comment_id for c in com_ids]
+    NotesComments.query.filter(NotesComments.comment_id.in_(com_ids)).delete()
+    Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
 
 
 def update_note(note_content, note_title, update_date, user_id, note_id, caseid):
@@ -114,11 +132,40 @@ def update_note(note_content, note_title, update_date, user_id, note_id, caseid)
         db.session.commit()
         return note
 
-    else:
-        return None
+    return None
 
 
-def add_note(note_title, creation_date, user_id, caseid, directory_id, note_content=""):
+def update_note_revision(user_identifier, note: Notes) -> bool:
+    try:
+        latest_version = db.session.query(
+            NoteRevisions
+        ).filter_by(
+            note_id=note.note_id
+        ).order_by(
+            NoteRevisions.revision_number.desc()
+        ).first()
+        revision_number = 1 if latest_version is None else latest_version.revision_number + 1
+
+        if (revision_number > 1
+                and latest_version.note_title == note.note_title and latest_version.note_content == note.note_content):
+                return False
+
+        note_version = NoteRevisions(
+            note_id=note.note_id,
+            revision_number=revision_number,
+            note_title=note.note_title,
+            note_content=note.note_content,
+            note_user=user_identifier,
+            revision_timestamp=datetime.utcnow()
+        )
+        db_create(note_version)
+
+        return True
+    except IntegrityError as e:
+        raise PersistenceError(e)
+
+
+def add_note(note_title, creation_date, user_id, caseid, directory_id, note_content=''):
     note = Notes()
     note.note_title = note_title
     note.note_creationdate = note.note_lastupdate = creation_date
@@ -233,7 +280,7 @@ def add_note_group(group_title, caseid, userid, creationdate):
     db.session.commit()
 
     if group_title == '':
-        ng.group_title = "New notes group"
+        ng.group_title = 'New notes group'
 
     db.session.commit()
 
@@ -297,8 +344,7 @@ def update_note_group(group_title, group_id, caseid):
         db.session.commit()
         return ng
 
-    else:
-        return None
+    return None
 
 
 def find_pattern_in_notes(pattern, caseid):
@@ -329,8 +375,7 @@ def add_comment_to_note(note_id, comment_id):
     ec.comment_note_id = note_id
     ec.comment_id = comment_id
 
-    db.session.add(ec)
-    db.session.commit()
+    db_create(ec)
 
 
 def get_case_notes_comments_count(notes_list):
@@ -352,6 +397,8 @@ def get_case_note_comment(note_id, comment_id):
         Comments.comment_date,
         Comments.comment_update_date,
         Comments.comment_uuid,
+        Comments.comment_user_id,
+        Comments.comment_case_id,
         User.name,
         User.user
     ).join(
@@ -366,23 +413,22 @@ def get_case_note_comment(note_id, comment_id):
     ).first()
 
 
-def delete_note_comment(note_id, comment_id):
+def delete_note_comment(user_identifier, note_id, comment_id):
     comment = Comments.query.filter(
         Comments.comment_id == comment_id,
-        Comments.comment_user_id == current_user.id
+        Comments.comment_user_id == user_identifier
     ).first()
     if not comment:
-        return False, "You are not allowed to delete this comment"
+        return False, 'You are not allowed to delete this comment'
 
     NotesComments.query.filter(
         NotesComments.comment_note_id == note_id,
         NotesComments.comment_id == comment_id
     ).delete()
 
-    db.session.delete(comment)
-    db.session.commit()
+    db_delete(comment)
 
-    return True, "Comment deleted"
+    return True, 'Comment deleted'
 
 
 def get_directories_with_note_count(case_id):
@@ -406,6 +452,12 @@ def get_directories_with_note_count(case_id):
     return directories_with_note_count
 
 
+def paginate_notes_directories(case_id, pagination_parameters: PaginationParameters) -> Pagination:
+    query = NoteDirectory.query.filter_by(case_id=case_id)
+
+    return paginate(NoteDirectory, pagination_parameters, query)
+
+
 def get_directory_with_note_count(directory):
     note_count = Notes.query.filter_by(directory_id=directory.id).count()
 
@@ -421,3 +473,33 @@ def get_directory_with_note_count(directory):
             directory_dict['subdirectories'].append(get_directory_with_note_count(subdirectory))
 
     return directory_dict
+
+
+def search_notes(search_value):
+    search_condition = and_()
+    notes = Notes.query.filter(
+        Notes.note_content.like(f'%{search_value}%'),
+        Cases.client_id == Client.client_id,
+        search_condition
+    ).with_entities(
+        Notes.note_id,
+        Notes.note_title,
+        Cases.name.label('case_name'),
+        Client.name.label('client_name'),
+        Cases.case_id
+    ).join(
+        Notes.case
+    ).order_by(
+        Client.name
+    ).all()
+
+    return [row._asdict() for row in notes]
+
+
+def search_notes_in_case(case_identifier, search_input):
+    notes = Notes.query.filter(
+        and_(Notes.note_case_id == case_identifier,
+             or_(Notes.note_title.ilike(f'%{search_input}%'),
+                 Notes.note_content.ilike(f'%{search_input}%')))
+    ).all()
+    return notes

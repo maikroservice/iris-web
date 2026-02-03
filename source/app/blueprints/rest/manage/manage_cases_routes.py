@@ -22,13 +22,14 @@ import urllib.parse
 
 from flask import Blueprint
 from flask import request
-from flask_login import current_user
 from werkzeug import Response
 from werkzeug.utils import secure_filename
+from marshmallow import ValidationError
 
-from app import db
+from app.db import db
 from app.blueprints.rest.parsing import parse_comma_separated_identifiers
 from app.blueprints.rest.endpoints import endpoint_deprecated
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.alerts.alerts_db import get_alert_status_by_name
 from app.datamgmt.case.case_db import get_case
 from app.datamgmt.iris_engine.modules_db import get_pipelines_args_from_name
@@ -38,7 +39,6 @@ from app.datamgmt.manage.manage_cases_db import close_case, map_alert_resolution
 from app.datamgmt.manage.manage_cases_db import get_case_details_rt
 from app.datamgmt.manage.manage_cases_db import list_cases_dict
 from app.datamgmt.manage.manage_cases_db import reopen_case
-from app.iris_engine.access_control.utils import ac_fast_check_current_user_has_case_access
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.module_handler.module_handler import configure_module_on_init
 from app.iris_engine.module_handler.module_handler import instantiate_module_from_name
@@ -51,6 +51,8 @@ from app.schema.marshables import CaseSchema
 from app.schema.marshables import CaseDetailsSchema
 from app.util import add_obj_history_entry
 from app.blueprints.access_controls import ac_requires_case_identifier
+from app.blueprints.access_controls import ac_fast_check_current_user_has_case_access
+from app.blueprints.access_controls import ac_current_user_has_customer_access
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.access_controls import ac_api_return_access_denied
 from app.blueprints.responses import response_error
@@ -59,7 +61,9 @@ from app.blueprints.rest.parsing import parse_pagination_parameters
 from app.business.cases import cases_delete
 from app.business.cases import cases_update
 from app.business.cases import cases_create
-from app.business.errors import BusinessProcessingError
+from app.business.cases import cases_get_by_identifier
+from app.models.errors import BusinessProcessingError
+from app.iris_engine.module_handler.module_handler import call_deprecated_on_preload_modules_hook
 
 manage_cases_rest_blueprint = Blueprint('manage_case_rest', __name__)
 
@@ -111,7 +115,7 @@ def manage_case_filter() -> Response:
         draw = 1
 
     filtered_cases = get_filtered_cases(
-        current_user.id,
+        iris_current_user.id,
         pagination_parameters,
         case_ids=case_ids_str,
         case_customer_id=case_customer_id,
@@ -184,10 +188,10 @@ def api_reopen_case(identifier):
 
                 db.session.add(alert)
 
-    case = call_modules_hook('on_postload_case_update', data=case, caseid=identifier)
+    case = call_modules_hook('on_postload_case_update', case, caseid=identifier)
 
     add_obj_history_entry(case, 'case reopen')
-    track_activity("reopen case ID {}".format(identifier), caseid=identifier)
+    track_activity(f"reopen case ID {identifier}", caseid=identifier)
     case_schema = CaseSchema()
 
     return response_success("Case reopen successfully", data=case_schema.dump(res))
@@ -200,15 +204,15 @@ def api_case_close(identifier):
         return ac_api_return_access_denied(caseid=identifier)
 
     if not identifier:
-        return response_error("No case ID provided")
+        return response_error('No case ID provided')
 
     case = get_case(identifier)
     if not case:
-        return response_error("Tried to close an non-existing case")
+        return response_error('Tried to close an non-existing case')
 
     res = close_case(identifier)
     if not res:
-        return response_error("Tried to close an non-existing case")
+        return response_error('Tried to close an non-existing case')
 
     # Close the related alerts
     if case.alerts:
@@ -218,24 +222,24 @@ def api_case_close(identifier):
         for alert in case.alerts:
             if alert.alert_status_id != close_status.status_id:
                 alert.alert_status_id = close_status.status_id
-                alert = call_modules_hook('on_postload_alert_update', data=alert, caseid=identifier)
+                alert = call_modules_hook('on_postload_alert_update', alert, caseid=identifier)
 
             if alert.alert_resolution_status_id != case_status_id_mapped:
                 alert.alert_resolution_status_id = case_status_id_mapped
-                alert = call_modules_hook('on_postload_alert_resolution_update', data=alert, caseid=identifier)
+                alert = call_modules_hook('on_postload_alert_resolution_update', alert, caseid=identifier)
 
-                track_activity(f"closing alert ID {alert.alert_id} due to case #{identifier} being closed",
+                track_activity(f'closing alert ID {alert.alert_id} due to case #{identifier} being closed',
                                caseid=identifier, ctx_less=False)
 
                 db.session.add(alert)
 
-    case = call_modules_hook('on_postload_case_update', data=case, caseid=identifier)
+    case = call_modules_hook('on_postload_case_update', case, caseid=identifier)
 
     add_obj_history_entry(case, 'case closed')
-    track_activity("closed case ID {}".format(identifier), caseid=identifier, ctx_less=False)
+    track_activity(f'closed case ID {identifier}', caseid=identifier, ctx_less=False)
     case_schema = CaseSchema()
 
-    return response_success("Case closed successfully", data=case_schema.dump(res))
+    return response_success('Case closed successfully', data=case_schema.dump(res))
 
 
 @manage_cases_rest_blueprint.route('/manage/cases/add', methods=['POST'])
@@ -245,8 +249,13 @@ def api_add_case():
     case_schema = CaseSchema()
 
     try:
-        case = cases_create(request.get_json())
-        return response_success('Case created', data=case_schema.dump(case))
+        request_data = call_deprecated_on_preload_modules_hook('case_create', request.get_json())
+        case = case_schema.load(request_data)
+        case_template_id = request_data.pop('case_template_id', None)
+        result = cases_create(iris_current_user, case, case_template_id)
+        return response_success('Case created', data=case_schema.dump(result))
+    except ValidationError as e:
+        raise response_error('Data error', e.messages)
     except BusinessProcessingError as e:
         return response_error(e.get_message(), data=e.get_data())
 
@@ -254,7 +263,7 @@ def api_add_case():
 @manage_cases_rest_blueprint.route('/manage/cases/list', methods=['GET'])
 @ac_api_requires(Permissions.standard_user)
 def api_list_case():
-    data = list_cases_dict(current_user.id)
+    data = list_cases_dict(iris_current_user.id)
 
     return response_success("", data=data)
 
@@ -268,8 +277,30 @@ def update_case_info(identifier):
 
     case_schema = CaseSchema()
     try:
-        case, msg = cases_update(identifier, request.get_json())
-        return response_success(msg, data=case_schema.dump(case))
+        case = cases_get_by_identifier(identifier)
+
+        request_data = request.get_json()
+        # If user tries to update the customer, check if the user has access to the new customer
+        if request_data.get('case_customer') and request_data.get('case_customer') != case.client_id:
+            if not ac_current_user_has_customer_access(request_data.get('case_customer')):
+                raise BusinessProcessingError('Invalid customer ID. Permission denied.')
+
+        if 'case_name' in request_data:
+            short_case_name = request_data.get('case_name').replace(f'#{case.case_id} - ', '')
+            request_data['case_name'] = f'#{case.case_id} - {short_case_name}'
+        request_data['case_customer'] = case.client_id if not request_data.get('case_customer') else request_data.get(
+            'case_customer')
+        request_data['reviewer_id'] = None if request_data.get('reviewer_id') == '' else request_data.get('reviewer_id')
+
+        updated_case = case_schema.load(request_data, instance=case, partial=True)
+
+        protagonists = request_data.get('protagonists')
+        tags = request_data.get('case_tags')
+        case = cases_update(case, updated_case, protagonists, tags)
+        return response_success('Updated', data=case_schema.dump(case))
+    except ValidationError as e:
+        return response_error('Data error', e.messages)
+
     except BusinessProcessingError as e:
         return response_error(e.get_message(), data=e.get_data())
 
@@ -365,8 +396,7 @@ def manage_cases_uploadfiles(caseid):
     mod, _ = instantiate_module_from_name(pipeline_mod)
     status = configure_module_on_init(mod)
     if status.is_failure():
-        return response_error("Path for upload {} is not built ! Unreachable pipeline".format(
-            os.path.join(f.filename)))
+        return response_error(f"Path for upload {os.path.join(f.filename)} is not built ! Unreachable pipeline")
 
     case_customer = None
     case_name = None

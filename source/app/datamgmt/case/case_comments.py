@@ -15,17 +15,17 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+from typing import Optional
 
-from app.models.models import Comments
+from app.models.comments import Comments
 
 
-def get_case_comment(comment_id, caseid):
+def get_case_comment(comment_id, caseid) -> Optional[Comments]:
     if caseid is None:
         return Comments.query.filter(
             Comments.comment_id == comment_id
         ).first()
-    else:
-        return Comments.query.filter(
-            Comments.comment_id == comment_id,
-            Comments.comment_case_id == caseid
-        ).first()
+    return Comments.query.filter(
+        Comments.comment_id == comment_id,
+        Comments.comment_case_id == caseid
+    ).first()

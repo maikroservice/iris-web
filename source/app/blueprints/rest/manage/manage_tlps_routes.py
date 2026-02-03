@@ -18,7 +18,7 @@
 
 from flask import Blueprint
 
-from app.models.models import Tlp
+from app.models.iocs import Tlp
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.responses import response_error
 from app.blueprints.responses import response_success
@@ -40,6 +40,6 @@ def get_tlp_type(cur_id):
 
     tlp_type = Tlp.query.filter(Tlp.tlp_id == cur_id).first()
     if not tlp_type:
-        return response_error("Invalid TLP ID {type_id}".format(type_id=cur_id))
+        return response_error(f"Invalid TLP ID {cur_id}")
 
     return response_success("", data=tlp_type)

@@ -15,19 +15,21 @@
 #  You should have received a copy of the GNU Lesser General Public License
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
 import json
 import logging as logger
 from sqlalchemy.orm.attributes import flag_modified
 
-from app import db, app
-from app.models.models import CaseAssets
-from app.models.models import CaseReceivedFile
+from app.db import db
+from app import app
+from app.models.assets import CaseAssets
+from app.models.evidences import CaseReceivedFile
 from app.models.models import CaseTasks
 from app.models.cases import Cases
 from app.models.cases import CasesEvent
-from app.models.models import Client
+from app.models.customers import Client
 from app.models.models import CustomAttribute
-from app.models.models import Ioc
+from app.models.iocs import Ioc
 from app.models.models import Notes
 
 log = logger.getLogger(__name__)
@@ -126,10 +128,9 @@ def add_tab_attribute(obj, tab_name):
     if tab_name in attribute:
         return True
 
-    else:
-        attribute[tab_name] = {}
-        flag_modified(obj, "custom_attributes")
-        db.session.commit()
+    attribute[tab_name] = {}
+    flag_modified(obj, "custom_attributes")
+    db.session.commit()
 
     return True
 
@@ -146,16 +147,14 @@ def add_tab_attribute_field(obj, tab_name, field_name, field_type, field_value, 
         attribute[tab_name] = {}
 
     attr = {
-        field_name: {
-            "mandatory": mandatory if mandatory is not None else False,
-            "type": field_type,
-            "value": field_value
-        }
+        "mandatory": mandatory if mandatory is not None else False,
+        "type": field_type,
+        "value": field_value
     }
     if field_options:
-        attr[field_name]['options'] = field_options
+        attr['options'] = field_options
 
-    attribute[tab_name][field_name] = attr[field_name]
+    attribute[tab_name][field_name] = attr
 
     obj.custom_attributes = attribute
 
@@ -214,21 +213,20 @@ def merge_custom_attributes(data, obj_id, object_type, overwrite=False):
         db.session.commit()
         return obj.custom_attributes
 
-    else:
-        default_attr = get_default_custom_attributes(object_type)
-        for tab in data:
-            if default_attr.get(tab) is None:
-                app.logger.info(f'Missing tab {tab} in {object_type} default attribute')
-                continue
+    default_attr = get_default_custom_attributes(object_type)
+    for tab in data:
+        if default_attr.get(tab) is None:
+            app.logger.info(f'Missing tab {tab} in {object_type} default attribute')
+            continue
 
-            for field in data[tab]:
-                if field not in default_attr[tab]:
-                    app.logger.info(f'Missing field {field} in {object_type} default attribute')
+        for field in data[tab]:
+            if field not in default_attr[tab]:
+                app.logger.info(f'Missing field {field} in {object_type} default attribute')
 
-                else:
-                    default_attr[tab][field]['value'] = data[tab][field]
+            else:
+                default_attr[tab][field]['value'] = data[tab][field]
 
-        return default_attr
+    return default_attr
 
 
 def validate_attribute(attribute):

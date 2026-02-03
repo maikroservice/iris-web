@@ -22,7 +22,7 @@ from sqlalchemy import asc
 from sqlalchemy import desc
 
 from app.models.cases import Cases
-from app.models.models import Client
+from app.models.customers import Client
 from app.models.authorization import CaseAccessLevel
 from app.models.authorization import UserCaseEffectiveAccess
 from app.datamgmt.authorization import has_deny_all_access_level
@@ -81,8 +81,8 @@ def ctx_search_user_cases(search, user_id, max_results: int = 100):
         conditions.append(and_(
             UserCaseEffectiveAccess.user_id == user_id,
             or_(
-                Cases.name.ilike('%{}%'.format(search)),
-                Client.name.ilike('%{}%'.format(search))
+                Cases.name.ilike(f'%{search}%'),
+                Client.name.ilike(f'%{search}%')
         )))
 
     uceas = UserCaseEffectiveAccess.query.with_entities(
@@ -102,7 +102,6 @@ def ctx_search_user_cases(search, user_id, max_results: int = 100):
     ).filter(
         *conditions
     ).limit(max_results).all()
-
 
     results = []
     for ucea in uceas:

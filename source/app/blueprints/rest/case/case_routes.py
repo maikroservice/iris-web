@@ -22,14 +22,12 @@ import marshmallow
 import traceback
 from flask import Blueprint
 from flask import request
-from flask_login import current_user
-from sqlalchemy import and_
-from sqlalchemy import desc
 
 from app import app
-from app import db
+from app.db import db
 from app import socket_io
 from app.blueprints.rest.endpoints import endpoint_deprecated
+from app.blueprints.iris_user import iris_current_user
 from app.business.cases import cases_exists
 from app.datamgmt.case.case_db import get_review_id_from_name
 from app.datamgmt.case.case_db import case_get_desc_crc
@@ -38,16 +36,13 @@ from app.datamgmt.manage.manage_groups_db import add_case_access_to_group
 from app.datamgmt.manage.manage_groups_db import get_group_with_members
 from app.datamgmt.manage.manage_users_db import get_user
 from app.datamgmt.manage.manage_users_db import get_users_list_restricted_from_case
-from app.datamgmt.manage.manage_users_db import set_user_case_access
+from app.business.access_controls import set_user_case_access, ac_fast_check_user_has_case_access
+from app.business.activity import activity_search_in_case
 from app.business.cases import cases_export_to_json
-from app.iris_engine.access_control.utils import ac_fast_check_user_has_case_access
 from app.iris_engine.access_control.utils import ac_set_case_access_for_users
 from app.iris_engine.utils.tracker import track_activity
-from app.models.models import CaseStatus
-from app.models.models import ReviewStatusList
-from app.models.models import UserActivity
+from app.models.cases import CaseStatus, ReviewStatusList
 from app.models.authorization import CaseAccessLevel
-from app.models.authorization import User
 from app.schema.marshables import TaskLogSchema
 from app.schema.marshables import CaseSchema
 from app.schema.marshables import CaseDetailsSchema
@@ -92,7 +87,7 @@ def desc_fetch(caseid):
         # API call so we propagate the message to everyone
         data = {
             'case_description': case.description,
-            'last_saved': current_user.user
+            'last_saved': iris_current_user.user
         }
         socket_io.emit('save', data, to=f'case-{caseid}')
 
@@ -112,21 +107,7 @@ def summary_fetch(caseid):
 @ac_requires_case_identifier(CaseAccessLevel.read_only, CaseAccessLevel.full_access)
 @ac_api_requires()
 def activity_fetch(caseid):
-    ua = UserActivity.query.with_entities(
-        UserActivity.activity_date,
-        User.name,
-        UserActivity.activity_desc,
-        UserActivity.is_from_api
-    ).filter(and_(
-        UserActivity.case_id == caseid,
-        UserActivity.display_in_ui == True
-    )).join(
-        UserActivity.user
-    ).order_by(
-        desc(UserActivity.activity_date)
-    ).limit(40).all()
-
-    output = [a._asdict() for a in ua]
+    output = activity_search_in_case(caseid)
 
     return response_success('', data=output)
 
@@ -204,7 +185,7 @@ def group_cac_set_case(caseid):
             success, logs = ac_set_case_access_for_users(group.group_members, caseid, access_level)
 
     except Exception as e:
-        log.error('Error while setting case access for group: {}'.format(e))
+        log.error(f'Error while setting case access for group: {e}')
         log.error(traceback.format_exc())
         return response_error(msg=str(e))
 
@@ -227,7 +208,7 @@ def user_cac_set_case(caseid):
     if not data:
         return response_error('Invalid request')
 
-    if data.get('user_id') == current_user.id:
+    if data.get('user_id') == iris_current_user.id:
         return response_error('I can\'t let you do that, Dave')
 
     user = get_user(data.get('user_id'))
@@ -243,21 +224,29 @@ def user_cac_set_case(caseid):
 
     try:
 
-        success, logs = set_user_case_access(user.id, data.get('case_id'), data.get('access_level'))
+        case_identifier = data.get('case_id')
+        access_level = data.get('access_level')
+
+        if user.id is None or type(user.id) is not int:
+            return response_error('Invalid user id')
+        if case_identifier is None or type(case_identifier) is not int:
+            return response_error('Invalid case id')
+        if access_level is None or type(access_level) is not int:
+            return response_error('Invalid access level')
+        if CaseAccessLevel.has_value(access_level) is False:
+            return response_error('Invalid access level')
+
+        set_user_case_access(user.id, case_identifier, access_level)
         track_activity('case access set to {} for user {}'.format(data.get('access_level'), user.name), caseid)
         add_obj_history_entry(case, 'access changed to {} for user {}'.format(data.get('access_level'), user.name))
 
         db.session.commit()
+        return response_success(msg=f'Case access set to {access_level} for user {user.id}')
 
     except Exception as e:
-        log.error('Error while setting case access for user: {}'.format(e))
+        log.error(f'Error while setting case access for user: {e}')
         log.error(traceback.format_exc())
-        return response_error(msg=str(e))
-
-    if success:
-        return response_success(msg=logs)
-
-    return response_error(msg=logs)
+        return response_error(str(e))
 
 
 @case_rest_blueprint.route('/case/update-status', methods=['POST'])

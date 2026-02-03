@@ -24,12 +24,11 @@ from flask import Blueprint
 from flask import request
 
 from app import app
-from app import db
+from app.db import db
 from app.datamgmt.manage.manage_case_objs import search_asset_type_by_name
 from app.iris_engine.utils.tracker import track_activity
 from app.models.authorization import Permissions
-from app.models.models import AssetsType
-from app.models.models import CaseAssets
+from app.models.assets import AssetsType, CaseAssets
 from app.schema.marshables import AssetTypeSchema
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.responses import response_error
@@ -102,7 +101,7 @@ def view_assets(cur_id):
             asset_sc.asset_icon_compromised = fpath_c
 
         if asset_sc:
-            track_activity("updated asset type {}".format(asset_sc.asset_name))
+            track_activity(f"updated asset type {asset_sc.asset_name}")
             return response_success("Asset type updated", asset_sc)
 
     except marshmallow.exceptions.ValidationError as e:
@@ -132,7 +131,7 @@ def add_assets():
             db.session.add(asset_sc)
             db.session.commit()
 
-            track_activity("updated asset type {}".format(asset_sc.asset_name))
+            track_activity(f"updated asset type {asset_sc.asset_name}")
             return response_success("Asset type updated", asset_sc)
 
     except marshmallow.exceptions.ValidationError as e:
@@ -167,9 +166,9 @@ def delete_assets(cur_id):
 
     db.session.delete(asset)
 
-    track_activity("Deleted asset type ID {asset_id}".format(asset_id=cur_id), ctx_less=True)
+    track_activity(f"Deleted asset type ID {cur_id}", ctx_less=True)
 
-    return response_success("Deleted asset type ID {cur_id} successfully".format(cur_id=cur_id))
+    return response_success(f"Deleted asset type ID {cur_id} successfully")
 
 
 @manage_assets_type_rest_blueprint.route('/manage/asset-types/search', methods=['POST'])

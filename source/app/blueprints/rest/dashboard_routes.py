@@ -25,18 +25,20 @@ from flask import Blueprint
 from flask import session
 from flask import request
 from flask import redirect
-from flask_login import current_user
 from flask_login import logout_user
 
-from app import db
+from app.db import db
 from app import app
 from app import oidc_client
 
 from app.blueprints.rest.endpoints import endpoint_deprecated
-from app.datamgmt.dashboard.dashboard_db import get_global_task, list_user_cases, list_user_reviews
-from app.datamgmt.dashboard.dashboard_db import get_tasks_status
-from app.datamgmt.dashboard.dashboard_db import list_global_tasks
-from app.datamgmt.dashboard.dashboard_db import list_user_tasks
+from app.blueprints.iris_user import iris_current_user
+from app.datamgmt.case.case_db import list_user_reviews
+from app.datamgmt.case.case_db import list_user_cases
+from app.datamgmt.case.case_tasks_db import get_tasks_status
+from app.datamgmt.global_tasks import list_global_tasks
+from app.datamgmt.global_tasks import get_global_task
+from app.datamgmt.case.case_tasks_db import list_user_tasks
 from app.forms import CaseGlobalTaskForm
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
@@ -73,10 +75,8 @@ def logout():
     Logout function. Erase its session and redirect to index i.e login
     :return: Page
     """
-
     if session['current_case']:
-        current_user.ctx_case = session['current_case']['case_id']
-        current_user.ctx_human_case = session['current_case']['case_name']
+        iris_current_user.ctx_case = session['current_case']['case_id']
         db.session.commit()
 
     if is_authentication_oidc():
@@ -86,19 +86,18 @@ def logout():
                     state=session["oidc_state"])
                 logout_url = logout_request.request(
                     oidc_client.provider_info["end_session_endpoint"])
-                track_activity("user '{}' is been logged-out".format(
-                    current_user.user), ctx_less=True, display_in_ui=False)
+                track_activity(f"user '{iris_current_user.user}' is been logged-out", ctx_less=True, display_in_ui=False)
                 logout_user()
                 session.clear()
                 return redirect(logout_url)
             except GrantError:
                 track_activity(
-                    f"no oidc session found for user '{current_user.user}', skipping oidc provider logout and continuing to logout local user",
+                    f"no oidc session found for user '{iris_current_user.user}', skipping oidc provider logout and continuing to logout local user",
                     ctx_less=True,
                     display_in_ui=False
                 )
 
-    track_activity("user '{}' is been logged-out".format(current_user.user),
+    track_activity(f"user '{iris_current_user.user}' is been logged-out",
                    ctx_less=True, display_in_ui=False)
     logout_user()
     session.clear()
@@ -123,8 +122,7 @@ def get_cases_charts():
     retr = [[], []]
     rk = {}
     for case in res:
-        month = "{}/{}/{}".format(case.open_date.day,
-                                  case.open_date.month, case.open_date.year)
+        month = f"{case.open_date.day}/{case.open_date.month}/{case.open_date.year}"
 
         if month in rk:
             rk[month] += 1
@@ -137,6 +135,7 @@ def get_cases_charts():
 
 
 @dashboard_rest_blueprint.route('/global/tasks/list', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/global-tasks')
 @ac_api_requires()
 def get_gtasks():
     tasks_list = list_global_tasks()
@@ -155,16 +154,18 @@ def get_gtasks():
 
 
 @dashboard_rest_blueprint.route('/global/tasks/<int:cur_id>', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/global-tasks/{identifier}')
 @ac_api_requires()
 def view_gtask(cur_id):
-    task = get_global_task(task_id=cur_id)
+    task = get_global_task(cur_id)
     if not task:
         return response_error(f'Global task ID {cur_id} not found')
 
-    return response_success("", data=task._asdict())
+    return response_success('', data=task._asdict())
 
 
 @dashboard_rest_blueprint.route('/user/tasks/status/update', methods=['POST'])
+@endpoint_deprecated('PUT', '/api/v2/cases/{case_identifier}/tasks/{identifier}')
 @ac_api_requires()
 @ac_requires_case_identifier()
 def utask_statusupdate(caseid):
@@ -201,6 +202,7 @@ def utask_statusupdate(caseid):
 
 
 @dashboard_rest_blueprint.route('/global/tasks/add', methods=['POST'])
+@endpoint_deprecated('POST', '/api/v2/global-tasks')
 @ac_api_requires()
 @ac_requires_case_identifier()
 def add_gtask(caseid):
@@ -208,15 +210,14 @@ def add_gtask(caseid):
 
         gtask_schema = GlobalTasksSchema()
 
-        request_data = call_modules_hook(
-            'on_preload_global_task_create', data=request.get_json(), caseid=caseid)
+        request_data = call_modules_hook('on_preload_global_task_create', request.get_json(), caseid=caseid)
 
         gtask = gtask_schema.load(request_data)
 
     except marshmallow.exceptions.ValidationError as e:
         return response_error(msg="Data error", data=e.messages)
 
-    gtask.task_userid_update = current_user.id
+    gtask.task_userid_update = iris_current_user.id
     gtask.task_open_date = datetime.utcnow()
     gtask.task_last_update = datetime.utcnow()
     gtask.task_last_update = datetime.utcnow()
@@ -229,15 +230,14 @@ def add_gtask(caseid):
     except Exception as e:
         return response_error(msg="Data error", data=e.__str__())
 
-    gtask = call_modules_hook(
-        'on_postload_global_task_create', data=gtask, caseid=caseid)
-    track_activity("created new global task \'{}\'".format(
-        gtask.task_title), caseid=caseid)
+    gtask = call_modules_hook('on_postload_global_task_create', gtask, caseid=caseid)
+    track_activity(f"created new global task \'{gtask.task_title}\'", caseid=caseid)
 
     return response_success('Task added', data=gtask_schema.dump(gtask))
 
 
 @dashboard_rest_blueprint.route('/global/tasks/update/<int:cur_id>', methods=['POST'])
+@endpoint_deprecated('PUT', '/api/v2/global-tasks/{identifier}')
 @ac_api_requires()
 @ac_requires_case_identifier()
 def edit_gtask(cur_id, caseid):
@@ -254,11 +254,10 @@ def edit_gtask(cur_id, caseid):
     try:
         gtask_schema = GlobalTasksSchema()
 
-        request_data = call_modules_hook('on_preload_global_task_update', data=request.get_json(),
-                                         caseid=caseid)
+        request_data = call_modules_hook('on_preload_global_task_update', request.get_json(), caseid=caseid)
 
         gtask = gtask_schema.load(request_data, instance=task)
-        gtask.task_userid_update = current_user.id
+        gtask.task_userid_update = iris_current_user.id
         gtask.task_last_update = datetime.utcnow()
 
         db.session.commit()
@@ -269,18 +268,17 @@ def edit_gtask(cur_id, caseid):
     except marshmallow.exceptions.ValidationError as e:
         return response_error(msg="Data error", data=e.messages)
 
-    track_activity("updated global task {} (status {})".format(
-        task.task_title, task.task_status_id), caseid=caseid)
+    track_activity(f"updated global task {task.task_title} (status {task.task_status_id})", caseid=caseid)
 
     return response_success('Task updated', data=gtask_schema.dump(gtask))
 
 
 @dashboard_rest_blueprint.route('/global/tasks/delete/<int:cur_id>', methods=['POST'])
+@endpoint_deprecated('DELETE', '/api/v2/global-tasks/{identifier}')
 @ac_api_requires()
 @ac_requires_case_identifier()
 def gtask_delete(cur_id, caseid):
-    call_modules_hook('on_preload_global_task_delete',
-                      data=cur_id, caseid=caseid)
+    call_modules_hook('on_preload_global_task_delete', cur_id, caseid=caseid)
 
     if not cur_id:
         return response_error("Missing parameter")
@@ -292,9 +290,8 @@ def gtask_delete(cur_id, caseid):
     GlobalTasks.query.filter(GlobalTasks.id == cur_id).delete()
     db.session.commit()
 
-    call_modules_hook('on_postload_global_task_delete',
-                      data=request.get_json(), caseid=caseid)
-    track_activity("deleted global task ID {}".format(cur_id), caseid=caseid)
+    call_modules_hook('on_postload_global_task_delete', request.get_json(), caseid=caseid)
+    track_activity(f"deleted global task ID {cur_id}", caseid=caseid)
 
     return response_success("Task deleted")
 
@@ -304,17 +301,17 @@ def gtask_delete(cur_id, caseid):
 @ac_api_requires()
 def list_own_cases():
     cases = list_user_cases(
+        iris_current_user.id,
         request.args.get('show_closed', 'false', type=str).lower() == 'true'
     )
 
     return response_success("", data=CaseDetailsSchema(many=True).dump(cases))
 
 
-
 @dashboard_rest_blueprint.route('/user/tasks/list', methods=['GET'])
 @ac_api_requires()
 def get_utasks():
-    ct = list_user_tasks()
+    ct = list_user_tasks(iris_current_user.id)
 
     if ct:
         output = [c._asdict() for c in ct]
@@ -332,7 +329,7 @@ def get_utasks():
 @dashboard_rest_blueprint.route('/user/reviews/list', methods=['GET'])
 @ac_api_requires()
 def get_reviews():
-    ct = list_user_reviews()
+    ct = list_user_reviews(iris_current_user.id)
 
     if ct:
         output = [c._asdict() for c in ct]

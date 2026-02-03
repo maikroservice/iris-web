@@ -23,17 +23,18 @@ import logging as log
 import marshmallow
 from flask import Blueprint
 from flask import request
-from flask_login import current_user
+from marshmallow import ValidationError
 
-from app import db
+from app.db import db
 from app.blueprints.rest.case_comments import case_comment_update
 from app.blueprints.rest.endpoints import endpoint_deprecated
+from app.blueprints.iris_user import iris_current_user
 from app.business.iocs import iocs_create
 from app.business.iocs import iocs_update
 from app.business.iocs import iocs_delete
 from app.business.iocs import iocs_get
-from app.business.errors import BusinessProcessingError
-from app.business.errors import ObjectNotFoundError
+from app.models.errors import BusinessProcessingError
+from app.models.errors import ObjectNotFoundError
 from app.datamgmt.case.case_iocs_db import add_comment_to_ioc
 from app.datamgmt.case.case_iocs_db import add_ioc
 from app.datamgmt.case.case_iocs_db import delete_ioc_comment
@@ -45,17 +46,19 @@ from app.datamgmt.case.case_iocs_db import get_ioc_type_id
 from app.datamgmt.case.case_iocs_db import get_tlps_dict
 from app.datamgmt.manage.manage_attribute_db import get_default_custom_attributes
 from app.datamgmt.states import get_ioc_state
-from app.iris_engine.access_control.utils import ac_fast_check_current_user_has_case_access
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
 from app.models.authorization import CaseAccessLevel
 from app.schema.marshables import CommentSchema
 from app.schema.marshables import IocSchema
 from app.blueprints.access_controls import ac_requires_case_identifier
+from app.blueprints.access_controls import ac_fast_check_current_user_has_case_access
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.access_controls import ac_api_return_access_denied
 from app.blueprints.responses import response_error
 from app.blueprints.responses import response_success
+from app.iris_engine.module_handler.module_handler import call_deprecated_on_preload_modules_hook
+from app.iris_engine.access_control.utils import ac_get_fast_user_cases_access
 
 case_ioc_rest_blueprint = Blueprint('case_ioc_rest', __name__)
 
@@ -73,7 +76,8 @@ def case_list_ioc(caseid):
         out = ioc._asdict()
 
         # Get links of the IoCs seen in other cases
-        ial = get_ioc_links(ioc.ioc_id)
+        user_search_limitations = ac_get_fast_user_cases_access(iris_current_user.id)
+        ial = get_ioc_links(ioc.ioc_id, user_search_limitations)
 
         out['link'] = [row._asdict() for row in ial]
         # Legacy, must be changed next version
@@ -104,8 +108,13 @@ def deprecated_case_add_ioc(caseid):
     ioc_schema = IocSchema()
 
     try:
-        ioc, msg = iocs_create(request.get_json(), caseid)
-        return response_success(msg, data=ioc_schema.dump(ioc))
+        request_data = call_deprecated_on_preload_modules_hook('ioc_create', request.get_json(), caseid)
+        request_data['case_id'] = caseid
+        ioc = ioc_schema.load(request_data)
+        ioc = iocs_create(ioc)
+        return response_success('IOC added', data=ioc_schema.dump(ioc))
+    except ValidationError as e:
+        return response_error('Data error', e.messages)
     except BusinessProcessingError as e:
         return response_error(e.get_message(), data=e.get_data())
 
@@ -170,7 +179,7 @@ def case_upload_ioc(caseid):
             row['ioc_type_id'] = type_id.type_id
             row.pop('ioc_type', None)
 
-            request_data = call_modules_hook('on_preload_ioc_create', data=row, caseid=caseid)
+            request_data = call_modules_hook('on_preload_ioc_create', row, caseid=caseid)
 
             ioc = add_ioc_schema.load(request_data)
             ioc.custom_attributes = get_default_custom_attributes('ioc')
@@ -181,8 +190,8 @@ def case_upload_ioc(caseid):
                 log.error(f'Unable to create IOC {ioc.ioc_value} for internal reasons')
                 continue
 
-            add_ioc(ioc, current_user.id, caseid)
-            ioc = call_modules_hook('on_postload_ioc_create', data=ioc, caseid=caseid)
+            add_ioc(ioc, iris_current_user.id, caseid)
+            ioc = call_modules_hook('on_postload_ioc_create', ioc, caseid=caseid)
             ret.append(request_data)
             track_activity(f'added ioc "{ioc.ioc_value}"', caseid=caseid)
 
@@ -240,13 +249,25 @@ def case_update_ioc(cur_id, caseid):
 
     try:
         ioc = iocs_get(cur_id)
-        ioc, msg = iocs_update(ioc, request.get_json())
-        return response_success(msg, data=ioc_schema.dump(ioc))
+
+        request_data = call_deprecated_on_preload_modules_hook('ioc_update', request.get_json(), ioc.case_id)
+
+        # validate before saving
+        request_data['ioc_id'] = ioc.ioc_id
+        request_data['case_id'] = ioc.case_id
+        ioc_sc = ioc_schema.load(request_data, instance=ioc, partial=True)
+        ioc = iocs_update(ioc, ioc_sc)
+        return response_success(f'Updated ioc "{ioc.ioc_value}"', data=ioc_schema.dump(ioc))
+
+    except ValidationError as e:
+        return response_error('Data error', e.messages)
+
     except BusinessProcessingError as e:
         return response_error(e.get_message(), data=e.get_data())
 
 
 @case_ioc_rest_blueprint.route('/case/ioc/<int:cur_id>/comments/list', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/iocs/{ioc_identifier}/comments')
 @ac_requires_case_identifier(CaseAccessLevel.read_only, CaseAccessLevel.full_access)
 @ac_api_requires()
 def case_comment_ioc_list(cur_id, caseid):
@@ -258,6 +279,7 @@ def case_comment_ioc_list(cur_id, caseid):
 
 
 @case_ioc_rest_blueprint.route('/case/ioc/<int:cur_id>/comments/add', methods=['POST'])
+@endpoint_deprecated('POST', '/api/v2/iocs/{ioc_identifier}/comments')
 @ac_requires_case_identifier(CaseAccessLevel.full_access)
 @ac_api_requires()
 def case_comment_ioc_add(cur_id, caseid):
@@ -268,7 +290,7 @@ def case_comment_ioc_add(cur_id, caseid):
 
         comment = comment_schema.load(request.get_json())
         comment.comment_case_id = ioc.case_id
-        comment.comment_user_id = current_user.id
+        comment.comment_user_id = iris_current_user.id
         comment.comment_date = datetime.now()
         comment.comment_update_date = datetime.now()
         db.session.add(comment)
@@ -282,7 +304,7 @@ def case_comment_ioc_add(cur_id, caseid):
             'comment': comment_schema.dump(comment),
             'ioc': IocSchema().dump(ioc)
         }
-        call_modules_hook('on_postload_ioc_commented', data=hook_data, caseid=ioc.case_id)
+        call_modules_hook('on_postload_ioc_commented', hook_data, caseid=ioc.case_id)
 
         track_activity(f'ioc "{ioc.ioc_value}" commented', caseid=ioc.case_id)
         return response_success('IOC commented', data=comment_schema.dump(comment))
@@ -294,6 +316,7 @@ def case_comment_ioc_add(cur_id, caseid):
 
 
 @case_ioc_rest_blueprint.route('/case/ioc/<int:cur_id>/comments/<int:com_id>', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/iocs/{ioc_identifier}/comments/{identifier}')
 @ac_requires_case_identifier(CaseAccessLevel.read_only, CaseAccessLevel.full_access)
 @ac_api_requires()
 def case_comment_ioc_get(cur_id, com_id, caseid):
@@ -315,11 +338,11 @@ def case_comment_ioc_edit(cur_id, com_id, caseid):
 @ac_requires_case_identifier(CaseAccessLevel.full_access)
 @ac_api_requires()
 def case_comment_ioc_delete(cur_id, com_id, caseid):
-    success, msg = delete_ioc_comment(cur_id, com_id)
+    success, msg = delete_ioc_comment(iris_current_user.id, cur_id, com_id)
     if not success:
         return response_error(msg)
 
-    call_modules_hook('on_postload_ioc_comment_delete', data=com_id, caseid=caseid)
+    call_modules_hook('on_postload_ioc_comment_delete', com_id, caseid=caseid)
 
     track_activity(f'comment {com_id} on ioc {cur_id} deleted', caseid=caseid)
     return response_success(msg)

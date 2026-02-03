@@ -1,32 +1,12 @@
 apiVersion: v1
 kind: Secret
 metadata:
-  name: iris-root-ca-cert-secret-worker
-  labels:
-    app: {{ .Values.irisworker.app }}
-type: Opaque
-data:
-{{ (.Files.Glob "certificates/rootCA/irisRootCACert.pem").AsSecrets | indent 2 }}
----
-apiVersion: v1
-kind: Secret
-metadata:
   name: iris-ldap-certs-secret-worker
   labels:
     app: {{ .Values.irisworker.app }}
 type: Opaque
 data:
 {{ (.Files.Glob "certificates/ldap/*").AsSecrets | indent 2 }}
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: iris-certs-dir-rootca-secrets-worker
-  labels:
-    app: {{ .Values.irisworker.app }}
-type: Opaque
-data:
-{{ (.Files.Glob "certificates/rootCA/*").AsSecrets | indent 2 }}
 ---
 apiVersion: v1
 kind: Secret
@@ -69,23 +49,20 @@ spec:
           - name: DOCKERIZED
             value: {{ .Values.irisworker.DOCKERIZED | quote }}
 
-          - name: POSTGRES_USER
-            value: {{ .Values.irisworker.POSTGRES_USER | quote }}
+          {{- range $key := list "POSTGRES_USER" "POSTGRES_PASSWORD" "POSTGRES_ADMIN_USER" "POSTGRES_ADMIN_PASSWORD" "POSTGRES_PORT" "POSTGRES_SERVER" }}
+          - name: {{ $key }}
+            {{- if and (hasKey $.Values.irisworker "envFromSecret") (has $key $.Values.irisworker.envFromSecret.keys) }}
+            valueFrom:
+              secretKeyRef:
+                name: {{ $.Values.irisworker.envFromSecret.name }}
+                key: {{ $key }}
+            {{- else }}
+            value: {{ index $.Values.irisworker $key | quote }}
+            {{- end }}
+          {{- end }}
 
-          - name:  POSTGRES_PASSWORDD
-            value: {{ .Values.irisworker.POSTGRES_PASSWORD | quote }}
-
-          - name:  POSTGRES_ADMIN_USER
-            value: {{ .Values.irisworker.POSTGRES_ADMIN_USER | quote }}
-
-          - name:  POSTGRES_ADMIN_PASSWORD
-            value: {{ .Values.irisworker.POSTGRES_ADMIN_PASSWORD | quote }}    
-
-          - name:  POSTGRES_PORT
-            value: {{ .Values.irisworker.POSTGRES_PORT | quote }}   
-
-          - name:  POSTGRES_SERVER
-            value: {{ .Values.irisworker.POSTGRES_SERVER | quote }}  
+          - name: CELERY_BROKER
+            value: {{ .Values.irisworker.CELERY_BROKER | quote }}
 
           - name:  IRIS_SECRET_KEY
             value: {{ .Values.irisworker.IRIS_SECRET_KEY | quote }}
@@ -104,13 +81,6 @@ spec:
               name: user-templates
             - mountPath: /home/iris/server_data
               name: server-data
-            - mountPath: /etc/irisRootCACert.pem
-              name: iris-root-ca-cert
-              subPath: irisRootCACert.pem
-              readOnly: true
-            - mountPath: /home/iris/certificates/rootCA
-              name: iris-certs-dir-rootca
-              readOnly: true
             - mountPath: /home/iris/certificates/web_certificates
               name: iris-certs-dir-webcerts
               readOnly: true
@@ -124,12 +94,6 @@ spec:
           emptyDir: {}
         - name: server-data 
           emptyDir: {}
-        - name: iris-root-ca-cert
-          secret:
-            secretName: iris-root-ca-cert-secret-worker
-        - name: iris-certs-dir-rootca
-          secret:
-            secretName: iris-certs-dir-rootca-secrets-worker
         - name: iris-ldap-certs
           secret:
             secretName: iris-ldap-certs-secret-worker

@@ -27,6 +27,7 @@ from graphene import Int
 from graphene import Float
 from graphene import String
 
+from app.blueprints.access_controls import ac_current_user_has_customer_access
 from app.models.cases import Cases
 from app.models.authorization import Permissions
 from app.models.authorization import CaseAccessLevel
@@ -35,9 +36,13 @@ from app.business.iocs import iocs_build_filter_query
 from app.business.cases import cases_create
 from app.business.cases import cases_delete
 from app.business.cases import cases_update
+from app.business.cases import cases_get_by_identifier
+from app.models.errors import BusinessProcessingError
 from app.blueprints.graphql.permissions import permissions_check_current_user_has_some_permission
 from app.blueprints.graphql.permissions import permissions_check_current_user_has_some_case_access
-
+from app.iris_engine.module_handler.module_handler import call_deprecated_on_preload_modules_hook
+from app.schema.marshables import CaseSchema
+from app.blueprints.iris_user import iris_current_user
 from app.blueprints.graphql.iocs import IOCConnection
 
 
@@ -66,6 +71,7 @@ class CaseObject(SQLAlchemyObjectType):
     def resolve_case(root, info, case_id):
         permissions_check_current_user_has_some_case_access(case_id, [CaseAccessLevel.full_access])
         return Cases.query.get(case_id)
+
 
 class CaseConnection(Connection):
     class Meta:
@@ -103,8 +109,13 @@ class CaseCreate(Mutation):
             request['case_soc_id'] = soc_id
         if classification_id:
             request['classification_id'] = classification_id
-        case = cases_create(request)
-        return CaseCreate(case=case)
+
+        request_data = call_deprecated_on_preload_modules_hook('case_create', request)
+        schema = CaseSchema()
+        case = schema.load(request_data)
+        case_template_id = request_data.pop('case_template_id', None)
+        result = cases_create(iris_current_user, case, case_template_id)
+        return CaseCreate(case=result)
 
 
 class CaseDelete(Mutation):
@@ -169,5 +180,22 @@ class CaseUpdate(Mutation):
         permissions_check_current_user_has_some_permission([Permissions.standard_user])
         permissions_check_current_user_has_some_case_access(case_id, [CaseAccessLevel.full_access])
 
-        case, _ = cases_update(case_id, request)
+        case = cases_get_by_identifier(case_id)
+
+        # If user tries to update the customer, check if the user has access to the new customer
+        if request.get('case_customer') and request.get('case_customer') != case.client_id:
+            if not ac_current_user_has_customer_access(request.get('case_customer')):
+                raise BusinessProcessingError('Invalid customer ID. Permission denied.')
+
+        if 'case_name' in request:
+            short_case_name = request.get('case_name').replace(f'#{case.case_id} - ', '')
+            request['case_name'] = f'#{case.case_id} - {short_case_name}'
+        request['case_customer'] = case.client_id if not request.get('case_customer') else request.get('case_customer')
+        request['reviewer_id'] = None if request.get('reviewer_id') == '' else request.get('reviewer_id')
+
+        add_case_schema = CaseSchema()
+        updated_case = add_case_schema.load(request, instance=case, partial=True)
+        protagonists = request.get('protagonists')
+        tags = request.get('case_tags')
+        case = cases_update(case, updated_case, protagonists, tags)
         return CaseUpdate(case=case)

@@ -16,25 +16,36 @@
 #  along with this program; if not, write to the Free Software Foundation,
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
-from flask_login import current_user
 from sqlalchemy import and_
 
-from app import db
-from app import app
+from app.datamgmt.db_operations import db_create
+from app.datamgmt.db_operations import db_delete
+from app.db import db
+from app.datamgmt.filtering import get_filtered_data
 from app.datamgmt.states import update_ioc_state
-from app.datamgmt.conversions import convert_sort_direction
-from app.iris_engine.access_control.utils import ac_get_fast_user_cases_access
+from app.models.alerts import Alert
 from app.models.cases import Cases
-from app.models.models import Client
-from app.models.models import Comments
-from app.models.models import Ioc
-from app.models.models import IocComments
+from app.models.cases import CasesEvent
+from app.models.customers import Client
+from app.models.assets import CaseAssets
+from app.models.comments import Comments
+from app.models.comments import IocComments
+from app.models.iocs import Ioc
 from app.models.models import IocType
-from app.models.models import Tlp
+from app.models.iocs import Tlp
 from app.models.authorization import User
-from app.models.authorization import UserCaseEffectiveAccess
-from app.models.authorization import CaseAccessLevel
 from app.models.pagination_parameters import PaginationParameters
+from app.util import add_obj_history_entry
+
+
+relationship_model_map = {
+    'case': Cases,
+    'assets': CaseAssets,
+    'tlp': Tlp,
+    'events': CasesEvent,
+    'alerts': Alert,
+    'ioc_type': IocType
+}
 
 
 def get_iocs(case_identifier) -> list[Ioc]:
@@ -70,7 +81,6 @@ def update_ioc(ioc_type, ioc_tags, ioc_value, ioc_description, ioc_tlp, userid, 
 
 
 def delete_ioc(ioc: Ioc):
-    # Delete the relevant records from the AssetComments table
     com_ids = IocComments.query.with_entities(
         IocComments.comment_id
     ).filter(
@@ -79,10 +89,7 @@ def delete_ioc(ioc: Ioc):
 
     com_ids = [c.comment_id for c in com_ids]
     IocComments.query.filter(IocComments.comment_id.in_(com_ids)).delete()
-
-    Comments.query.filter(
-        Comments.comment_id.in_(com_ids)
-    ).delete()
+    Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
 
     db.session.delete(ioc)
 
@@ -111,12 +118,11 @@ def get_detailed_iocs(caseid):
     return detailed_iocs
 
 
-def get_ioc_links(ioc_id):
-    search_condition = and_(Cases.case_id.in_([]))
-
-    user_search_limitations = ac_get_fast_user_cases_access(current_user.id)
+def get_ioc_links(ioc_id, user_search_limitations):
     if user_search_limitations:
         search_condition = and_(Cases.case_id.in_(user_search_limitations))
+    else:
+        search_condition = and_(Cases.case_id.in_([]))
 
     ioc = Ioc.query.filter(Ioc.ioc_id == ioc_id).first()
 
@@ -143,6 +149,7 @@ def add_ioc(ioc: Ioc, user_id, caseid):
     db.session.add(ioc)
 
     update_ioc_state(caseid=caseid)
+    add_obj_history_entry(ioc, 'created ioc')
     db.session.commit()
 
 
@@ -167,14 +174,13 @@ def get_ioc_types_list():
     return l_types
 
 
-def add_ioc_type(name:str, description:str, taxonomy:str):
+def add_ioc_type(name: str, description: str, taxonomy: str):
     ioct = IocType(type_name=name,
                    type_description=description,
                    type_taxonomy=taxonomy
                 )
 
-    db.session.add(ioct)
-    db.session.commit()
+    db_create(ioct)
     return ioct
 
 
@@ -201,7 +207,7 @@ def get_tlps():
 def get_tlps_dict():
     tlpDict = {}
     for tlp in Tlp.query.all():
-        tlpDict[tlp.tlp_name]=tlp.tlp_id 
+        tlpDict[tlp.tlp_name] = tlp.tlp_id
     return tlpDict
 
 
@@ -223,8 +229,7 @@ def add_comment_to_ioc(ioc_id, comment_id):
     ec.comment_ioc_id = ioc_id
     ec.comment_id = comment_id
 
-    db.session.add(ec)
-    db.session.commit()
+    db_create(ec)
 
 
 def get_case_iocs_comments_count(iocs_list):
@@ -249,16 +254,18 @@ def get_case_ioc_comment(ioc_id, comment_id):
         Comments.comment_date,
         Comments.comment_update_date,
         Comments.comment_uuid,
+        Comments.comment_user_id,
+        Comments.comment_case_id,
         User.name,
         User.user
     ).join(IocComments.comment)
             .join(Comments.user).first())
 
 
-def delete_ioc_comment(ioc_id, comment_id):
+def delete_ioc_comment(user_identifier, ioc_id, comment_id):
     comment = Comments.query.filter(
         Comments.comment_id == comment_id,
-        Comments.comment_user_id == current_user.id
+        Comments.comment_user_id == user_identifier
     ).first()
     if not comment:
         return False, "You are not allowed to delete this comment"
@@ -268,8 +275,7 @@ def delete_ioc_comment(ioc_id, comment_id):
         IocComments.comment_id == comment_id
     ).delete()
 
-    db.session.delete(comment)
-    db.session.commit()
+    db_delete(comment)
 
     return True, "Comment deleted"
 
@@ -281,87 +287,39 @@ def get_ioc_by_value(ioc_value, caseid=None):
     return Ioc.query.filter(Ioc.ioc_value == ioc_value).first()
 
 
-def user_list_cases_view(user_id):
-    res = UserCaseEffectiveAccess.query.with_entities(
-        UserCaseEffectiveAccess.case_id
-    ).filter(and_(
-        UserCaseEffectiveAccess.user_id == user_id,
-        UserCaseEffectiveAccess.access_level != CaseAccessLevel.deny_all.value
-    )).all()
-
-    return [r.case_id for r in res]
-
-
-def _build_filter_ioc_query(
+def get_filtered_iocs(
         caseid: int = None,
-        ioc_type_id: int = None,
-        ioc_type: str = None,
-        ioc_tlp_id: int = None,
-        ioc_value: str = None,
-        ioc_description: str = None,
-        ioc_tags: str = None,
-        sort_by=None,
-        sort_dir='asc'):
+        pagination_parameters: PaginationParameters = None,
+        request_parameters: dict = None
+    ):
     """
     Get a list of iocs from the database, filtered by the given parameters
     """
 
-    conditions = []
-    if ioc_type_id is not None:
-        conditions.append(Ioc.ioc_type_id == ioc_type_id)
-
-    if ioc_type is not None:
-        conditions.append(Ioc.ioc_type == ioc_type)
-
-    if ioc_tlp_id is not None:
-        conditions.append(Ioc.ioc_tlp_id == ioc_tlp_id)
-
-    if ioc_value is not None:
-        conditions.append(Ioc.ioc_value == ioc_value)
-
-    if ioc_description is not None:
-        conditions.append(Ioc.ioc_description == ioc_description)
-
-    if ioc_tags is not None:
-        conditions.append(Ioc.ioc_tags == ioc_tags)
-
-    if caseid is not None:
-        conditions.append(Ioc.case_id == caseid)
-
-    query = Ioc.query.filter(*conditions)
-
-    if sort_by is not None:
-        order_func = convert_sort_direction(sort_dir)
-
-        if sort_by == 'opened_by':
-            query = query.join(User, Ioc.user_id == User.id).order_by(order_func(User.name))
-
-        elif hasattr(Ioc, sort_by):
-            query = query.order_by(order_func(getattr(Ioc, sort_by)))
-
-    return query
+    base_filter = Ioc.case_id == caseid if caseid is not None else None
+    return get_filtered_data(Ioc, base_filter, pagination_parameters, request_parameters, relationship_model_map)
 
 
-def get_filtered_iocs(
-        pagination_parameters: PaginationParameters,
-        caseid: int = None,
-        ioc_type_id: int = None,
-        ioc_type: str = None,
-        ioc_tlp_id: int = None,
-        ioc_value: str = None,
-        ioc_description: str = None,
-        ioc_tags: str = None
-        ):
+def search_iocs(search_value):
+    search_condition = and_()
+    res = Ioc.query.with_entities(
+        Ioc.ioc_value.label('ioc_name'),
+        Ioc.ioc_description.label('ioc_description'),
+        Ioc.ioc_misp,
+        IocType.type_name,
+        Tlp.tlp_name,
+        Tlp.tlp_bscolor,
+        Cases.name.label('case_name'),
+        Cases.case_id,
+        Client.name.label('customer_name')
+    ).filter(
+        and_(
+            Ioc.ioc_value.like(search_value),
+            Ioc.case_id == Cases.case_id,
+            Client.client_id == Cases.client_id,
+            Ioc.ioc_tlp_id == Tlp.tlp_id,
+            search_condition
+        )
+    ).join(Ioc.ioc_type).all()
 
-    query = _build_filter_ioc_query(caseid=caseid, ioc_type_id=ioc_type_id, ioc_type=ioc_type, ioc_tlp_id=ioc_tlp_id, ioc_value=ioc_value,
-                                    ioc_description=ioc_description, ioc_tags=ioc_tags,
-                                    sort_by=pagination_parameters.get_order_by(), sort_dir=pagination_parameters.get_direction())
-
-    try:
-        filtered_iocs = query.paginate(page=pagination_parameters.get_page(), per_page=pagination_parameters.get_per_page(), error_out=False)
-
-    except Exception as e:
-        app.logger.exception(f"Error getting cases: {str(e)}")
-        return None
-
-    return filtered_iocs
+    return [row._asdict() for row in res]

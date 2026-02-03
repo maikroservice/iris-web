@@ -1394,7 +1394,7 @@ function load_add_case() {
              ajax_notify_error(xhr, '/case/add');
              return false;
         }
-        $('#case_customer').selectpicker({
+        $('#case_customer_id').selectpicker({
             liveSearch: true,
             title: "Select customer *",
             style: "btn-outline-white",
@@ -1703,7 +1703,7 @@ $('.toggle-sidebar').on('click', function() {
         $('.wrapper').removeClass('sidebar_minimize');
         get_request_api('/user/mini-sidebar/set/false')
             .then((data) => {
-                if (data.success !== 'success') {
+                if (data.status !== 'success') {
                     notify_api_request_error(data);
                 }
             });
@@ -1711,7 +1711,7 @@ $('.toggle-sidebar').on('click', function() {
         $('.wrapper').addClass('sidebar_minimize');
         get_request_api('/user/mini-sidebar/set/true')
             .then((data) => {
-                if (data.success !== 'success') {
+                if (data.status !== 'success') {
                     notify_api_request_error(data);
                 }
             });
@@ -1719,6 +1719,11 @@ $('.toggle-sidebar').on('click', function() {
 });
 
 function do_deletion_prompt(message, force_prompt=false) {
+    // The whoami object needs to be refreshed to verify that the users
+    // has_deletion_confirmation value has not changed. For example,
+    // the global setting on the server to force confirmation might
+    // have been turned on during the user session.
+    userWhoamiRequest(true)
     if (userWhoami.has_deletion_confirmation || force_prompt) {
             return new Promise((resolve, reject) => {
                 swal({
@@ -1822,6 +1827,13 @@ $(document).ready(function(){
     var data_sent = new Object();
     data_sent.ctx = $('#user_context').val();
     data_sent.ctx_h = $("#user_context option:selected").text();
+    const queryString = window.location.search;
+    const urlParams = new URLSearchParams(queryString);
+    let currentContext = urlParams.get("cid");
+    if (currentContext === data_sent.ctx) {
+            $('#modal_switch_context').modal('hide');
+            return;
+    }
     post_request_api(`/context/set?cid=${data_sent.ctx}`, data_sent)
     .done((data) => {
             if (api_request_failed(data)) {

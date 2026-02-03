@@ -17,22 +17,24 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 from flask import Blueprint, request
-from flask_login import current_user
 from werkzeug import Response
 
-from app import db
+from app.db import db
 from app.datamgmt.filters.filters_db import get_filter_by_id
 from app.datamgmt.filters.filters_db import list_filters_by_type
 from app.iris_engine.utils.tracker import track_activity
 from app.schema.marshables import SavedFilterSchema
+from app.blueprints.iris_user import iris_current_user
 from app.blueprints.access_controls import ac_api_requires
 from app.blueprints.responses import response_success
 from app.blueprints.responses import response_error
+from app.blueprints.rest.endpoints import endpoint_deprecated
 
 saved_filters_rest_blueprint = Blueprint('saved_filters_rest', __name__)
 
 
 @saved_filters_rest_blueprint.route('/filters/add', methods=['POST'])
+@endpoint_deprecated('POST', '/api/v2/alerts-filters')
 @ac_api_requires()
 def filters_add_route() -> Response:
     """
@@ -49,7 +51,7 @@ def filters_add_route() -> Response:
     try:
         # Load the JSON data from the request
         data = request.get_json()
-        data['created_by'] = current_user.id
+        data['created_by'] = iris_current_user.id
 
         new_saved_filter = saved_filter_schema.load(data)
 
@@ -66,6 +68,7 @@ def filters_add_route() -> Response:
 
 
 @saved_filters_rest_blueprint.route('/filters/update/<int:filter_id>', methods=['POST'])
+@endpoint_deprecated('PUT', '/api/v2/alerts-filters/{identifier}')
 @ac_api_requires()
 def filters_update_route(filter_id) -> Response:
     """
@@ -82,7 +85,7 @@ def filters_update_route(filter_id) -> Response:
     try:
         data = request.get_json()
 
-        saved_filter = get_filter_by_id(filter_id)
+        saved_filter = get_filter_by_id(iris_current_user.id, filter_id)
         if not saved_filter:
             return response_error('Filter not found')
 
@@ -99,6 +102,7 @@ def filters_update_route(filter_id) -> Response:
 
 
 @saved_filters_rest_blueprint.route('/filters/delete/<int:filter_id>', methods=['POST'])
+@endpoint_deprecated('DELETE', '/api/v2/alerts-filters/{identifier}')
 @ac_api_requires()
 def filters_delete_route(filter_id) -> Response:
     """
@@ -111,7 +115,7 @@ def filters_delete_route(filter_id) -> Response:
         Response object
     """
     try:
-        saved_filter = get_filter_by_id(filter_id)
+        saved_filter = get_filter_by_id(iris_current_user.id, filter_id)
         if not saved_filter:
             return response_error('Filter not found')
 
@@ -128,6 +132,7 @@ def filters_delete_route(filter_id) -> Response:
 
 
 @saved_filters_rest_blueprint.route('/filters/<int:filter_id>', methods=['GET'])
+@endpoint_deprecated('GET', '/api/v2/alerts-filters/{identifier}')
 @ac_api_requires()
 def filters_get_route(filter_id) -> Response:
     """
@@ -142,7 +147,7 @@ def filters_get_route(filter_id) -> Response:
     saved_filter_schema = SavedFilterSchema()
 
     try:
-        saved_filter = get_filter_by_id(filter_id)
+        saved_filter = get_filter_by_id(iris_current_user.id, filter_id)
         if not saved_filter:
             return response_error('Filter not found')
 
@@ -169,7 +174,7 @@ def filters_list_route(filter_type) -> Response:
     saved_filter_schema = SavedFilterSchema(many=True)
 
     try:
-        saved_filters = list_filters_by_type(str(filter_type).lower())
+        saved_filters = list_filters_by_type(iris_current_user.id, str(filter_type).lower())
 
         return response_success(data=saved_filter_schema.dump(saved_filters))
 

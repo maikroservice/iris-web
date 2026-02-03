@@ -17,17 +17,20 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 import datetime
-from flask_login import current_user
-from sqlalchemy import and_
 from sqlalchemy import desc
+from flask_sqlalchemy.pagination import Pagination
 
-from app import db
+from app.datamgmt.db_operations import db_create
+from app.datamgmt.db_operations import db_delete
+from app.db import db
 from app.datamgmt.manage.manage_attribute_db import get_default_custom_attributes
 from app.datamgmt.states import update_evidences_state
-from app.models.models import CaseReceivedFile
-from app.models.models import Comments
-from app.models.models import EvidencesComments
+from app.models.evidences import CaseReceivedFile
+from app.models.comments import Comments
+from app.models.comments import EvidencesComments
 from app.models.authorization import User
+from app.models.pagination_parameters import PaginationParameters
+from app.datamgmt.filtering import paginate
 
 
 def get_rfiles(caseid):
@@ -40,7 +43,15 @@ def get_rfiles(caseid):
     return crf
 
 
-def add_rfile(evidence, caseid, user_id):
+def get_paginated_evidences(case_identifier, pagination_parameters: PaginationParameters) -> Pagination:
+    query = CaseReceivedFile.query.filter(
+        CaseReceivedFile.case_id == case_identifier
+    )
+
+    return paginate(CaseReceivedFile, pagination_parameters, query)
+
+
+def add_rfile(evidence: CaseReceivedFile, caseid, user_id):
 
     evidence.date_added = datetime.datetime.now()
     evidence.case_id = caseid
@@ -57,11 +68,8 @@ def add_rfile(evidence, caseid, user_id):
     return evidence
 
 
-def get_rfile(rfile_id, caseid):
-    return CaseReceivedFile.query.filter(
-        CaseReceivedFile.id == rfile_id,
-        CaseReceivedFile.case_id == caseid
-    ).first()
+def get_rfile(rfile_id):
+    return CaseReceivedFile.query.filter(CaseReceivedFile.id == rfile_id).first()
 
 
 def update_rfile(evidence, user_id, caseid):
@@ -73,12 +81,12 @@ def update_rfile(evidence, user_id, caseid):
     return evidence
 
 
-def delete_rfile(rfile_id, caseid):
+def delete_rfile(evidence: CaseReceivedFile):
     with db.session.begin_nested():
         com_ids = EvidencesComments.query.with_entities(
             EvidencesComments.comment_id
         ).filter(
-            EvidencesComments.comment_evidence_id == rfile_id
+            EvidencesComments.comment_evidence_id == evidence.id
         ).all()
 
         com_ids = [c.comment_id for c in com_ids]
@@ -86,14 +94,24 @@ def delete_rfile(rfile_id, caseid):
 
         Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
 
-        CaseReceivedFile.query.filter(and_(
-            CaseReceivedFile.id == rfile_id,
-            CaseReceivedFile.case_id == caseid,
-        )).delete()
+        db.session.delete(evidence)
 
-        update_evidences_state(caseid=caseid)
+        update_evidences_state(caseid=evidence.case_id)
 
         db.session.commit()
+
+
+def delete_evidences_comments_in_case(case_identifier):
+    com_ids = EvidencesComments.query.with_entities(
+        EvidencesComments.comment_id
+    ).join(CaseReceivedFile).filter(
+        EvidencesComments.comment_evidence_id == CaseReceivedFile.id,
+        CaseReceivedFile.case_id == case_identifier
+    ).all()
+
+    com_ids = [c.comment_id for c in com_ids]
+    EvidencesComments.query.filter(EvidencesComments.comment_id.in_(com_ids)).delete()
+    Comments.query.filter(Comments.comment_id.in_(com_ids)).delete()
 
 
 def get_case_evidence_comments(evidence_id):
@@ -112,8 +130,7 @@ def add_comment_to_evidence(evidence_id, comment_id):
     ec.comment_evidence_id = evidence_id
     ec.comment_id = comment_id
 
-    db.session.add(ec)
-    db.session.commit()
+    db_create(ec)
 
 
 def get_case_evidence_comments_count(evidences_list):
@@ -138,6 +155,8 @@ def get_case_evidence_comment(evidence_id, comment_id):
         Comments.comment_date,
         Comments.comment_update_date,
         Comments.comment_uuid,
+        Comments.comment_user_id,
+        Comments.comment_case_id,
         User.name,
         User.user
     ).join(
@@ -147,10 +166,10 @@ def get_case_evidence_comment(evidence_id, comment_id):
     ).first()
 
 
-def delete_evidence_comment(evidence_id, comment_id):
+def delete_evidence_comment(user_identifier, evidence_id, comment_id):
     comment = Comments.query.filter(
         Comments.comment_id == comment_id,
-        Comments.comment_user_id == current_user.id
+        Comments.comment_user_id == user_identifier
     ).first()
     if not comment:
         return False, "You are not allowed to delete this comment"
@@ -160,7 +179,6 @@ def delete_evidence_comment(evidence_id, comment_id):
         EvidencesComments.comment_id == comment_id
     ).delete()
 
-    db.session.delete(comment)
-    db.session.commit()
+    db_delete(comment)
 
     return True, "Comment deleted"

@@ -22,26 +22,23 @@ from sqlalchemy import desc
 
 from app.datamgmt.case.case_notes_db import get_notes_from_group
 from app.datamgmt.case.case_notes_db import get_case_note_comments
-from app.models.models import AnalysisStatus
-from app.models.models import CompromiseStatus
+from app.models.assets import CompromiseStatus, AssetsType, CaseAssets, AnalysisStatus
 from app.models.models import TaskAssignee
-from app.models.models import AssetsType
-from app.models.models import CaseAssets
 from app.models.models import CaseEventsAssets
 from app.models.models import CaseEventsIoc
-from app.models.models import CaseReceivedFile
+from app.models.evidences import CaseReceivedFile
 from app.models.models import CaseTasks
 from app.models.cases import Cases
 from app.models.cases import CasesEvent
-from app.models.models import Comments
+from app.models.comments import Comments
 from app.models.models import EventCategory
-from app.models.models import Ioc
+from app.models.iocs import Ioc
 from app.models.models import IocAssetLink
 from app.models.models import IocType
 from app.models.models import Notes
 from app.models.models import NotesGroup
 from app.models.models import TaskStatus
-from app.models.models import Tlp
+from app.models.iocs import Tlp
 from app.models.authorization import User
 from app.schema.marshables import CaseDetailsSchema
 from app.schema.marshables import CommentSchema
@@ -179,8 +176,7 @@ def export_case_evidences_json(case_id):
 
         return [row._asdict() for row in evidences]
 
-    else:
-        return []
+    return []
 
 
 def export_case_notes_json(case_id):
@@ -199,7 +195,7 @@ def export_case_notes_json(case_id):
         note_comments = get_case_note_comments(note.note_id)
         serialized_note = note_schema.dump(note)
         serialized_note['comments'] = comments_schema.dump(note_comments)
-        serialized_note["note_content"] = process_md_images_links_for_report(serialized_note["note_content"])
+        serialized_note['note_content'] = process_md_images_links_for_report(serialized_note['note_content'])
 
         serialized_notes.append(serialized_note)
 
@@ -255,7 +251,7 @@ def export_case_tm_json(case_id):
 
         alki = []
         for asset in as_list:
-            alki.append("{} ({})".format(asset.asset_name, asset.type))
+            alki.append(f'{asset.asset_name} ({asset.type})')
 
         ras['assets'] = alki
 

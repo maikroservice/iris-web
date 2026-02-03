@@ -20,12 +20,11 @@ import logging
 from uuid import uuid4
 
 from flask import session
-from flask_login import current_user
 from flask import request
 
-from app.blueprints.access_controls import get_case_access_from_api
+from app.blueprints.access_controls import get_case_access_from_api, ac_fast_check_current_user_has_case_access
+from app.blueprints.iris_user import iris_current_user
 from app.iris_engine.access_control.utils import ac_get_effective_permissions_of_user
-from app.iris_engine.access_control.utils import ac_fast_check_current_user_has_case_access
 
 
 class PermissionDeniedError(Exception):
@@ -66,7 +65,7 @@ def permissions_check_current_user_has_some_case_access_stricter(access_levels):
 # this method is used to replace annotation ac_api_requires
 def permissions_check_current_user_has_some_permission(permissions):
     if 'permissions' not in session:
-        session['permissions'] = ac_get_effective_permissions_of_user(current_user)
+        session['permissions'] = ac_get_effective_permissions_of_user(iris_current_user)
 
     for permission in permissions:
         if session['permissions'] & permission.value:

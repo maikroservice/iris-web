@@ -14,7 +14,7 @@ from app.alembic.alembic_utils import _table_has_column, _has_table
 
 # revision identifiers, used by Alembic.
 revision = '3715d4fac4de'
-down_revision = '11aa5b725b8e'
+down_revision = 'd5a720d1b99b'
 branch_labels = None
 depends_on = None
 
@@ -36,11 +36,11 @@ def upgrade():
         op.alter_column('ioc', 'case_id', nullable=True)
         return
 
-
     # Fetch all ioc_link rows
     ioc_links = conn.execute(text("SELECT ioc_id, case_id FROM ioc_link")).fetchall()
     if not ioc_links:
         # Nothing to migrate
+        op.drop_table('ioc_link')
         op.alter_column('ioc', 'case_id', nullable=True)
         return
 
@@ -146,7 +146,6 @@ def upgrade():
         case_id = row.case_id
         events_by_ioc_and_case.setdefault((ioc_id, case_id), []).append(row.event_id)
 
-
     # We'll keep track of which (ioc_id, case_id) pairs we've already handled
     # so we don't do duplicate work if multiple ioc_link rows refer to the same pair.
     already_handled = set()
@@ -230,7 +229,6 @@ def upgrade():
 
             # Update our global in-memory map so future checks won't create a second duplicate
             existing_map[key] = new_ioc_id
-
 
             # Move ioc_comments to the new ioc
             if ioc_id in comments_by_ioc:
@@ -340,7 +338,7 @@ def upgrade():
                         {"event_id": ev_id, "ioc_id": new_ioc_id, "case_id": link_case_id},
                     )
 
-    # op.drop_table('ioc_link')
+    op.drop_table('ioc_link')
 
     # Finally, ensure case_id is nullable or not as needed.
     op.alter_column('ioc', 'case_id', nullable=True)

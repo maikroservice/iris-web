@@ -20,7 +20,8 @@ import enum
 import secrets
 import uuid
 from flask_login import UserMixin
-from sqlalchemy import BigInteger, JSON
+from sqlalchemy import BigInteger
+from sqlalchemy import JSON
 from sqlalchemy import Boolean
 from sqlalchemy import Column
 from sqlalchemy import ForeignKey
@@ -32,7 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
-from app import db
+from app.db import db
 
 
 class CaseAccessLevel(enum.Enum):
@@ -207,6 +208,9 @@ class User(UserMixin, db.Model):
                   server_default=text('gen_random_uuid()'), unique=True)
     password = Column(String(500))
     ctx_case = Column(Integer)
+
+    # TODO this colum could be removed: the case name is now retrieved from the ctx_case (case identifier)
+    # DO NOT ACCESS this column anymore
     ctx_human_case = Column(String(256))
     active = Column(Boolean())
     api_key = Column(Text(), unique=True)
@@ -219,9 +223,13 @@ class User(UserMixin, db.Model):
     webauthn_credentials = Column(JSON, nullable=True)
     mfa_setup_complete = Column(Boolean(), default=False)
 
+    groups = relationship('Group', secondary='user_group', viewonly=True)
+    permissions = relationship('Group', secondary='user_group', viewonly=True)
+    customers = relationship('Client', secondary='user_client', viewonly=True)
+
     def __init__(self, user: str, name: str, email: str, password: str, active: bool,
                  external_id: str = None, is_service_account: bool = False, mfa_secret: str = None,
-                 webauthn_credentials: list = None):
+                 webauthn_credentials: list = None, in_dark_mode: bool = False):
         self.user = user
         self.name = name
         self.password = password
@@ -232,6 +240,7 @@ class User(UserMixin, db.Model):
         self.mfa_secrets = mfa_secret
         self.mfa_setup_complete = False
         self.webauthn_credentials = webauthn_credentials or []
+        self.in_dark_mode = in_dark_mode
 
     def __repr__(self):
         return str(self.id) + ' - ' + str(self.user)
@@ -245,3 +254,22 @@ class User(UserMixin, db.Model):
         db.session.commit()
 
         return self
+
+
+def ac_flag_match_mask(flag, mask):
+    return (flag & mask) == mask
+
+
+def ac_has_permission_server_administrator(permissions):
+    return ac_flag_match_mask(permissions, Permissions.server_administrator.value)
+
+
+def ac_access_level_mask_from_val_list(access_levels) -> int:
+    """
+    Return an access level mask from a list of access levels
+    """
+    am = 0
+    for acc in access_levels:
+        am |= int(acc)
+
+    return am

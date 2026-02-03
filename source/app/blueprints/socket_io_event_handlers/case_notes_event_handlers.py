@@ -17,39 +17,35 @@
 #  Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 from flask import request
-from flask_login import current_user
 from flask_socketio import emit
 from flask_socketio import join_room
 
 from app import socket_io
 from app.blueprints.access_controls import ac_socket_requires
+from app.blueprints.iris_user import iris_current_user
 from app.models.authorization import CaseAccessLevel
 
 
-@socket_io.on('change-note')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_change_note(data):
 
-    data['last_change'] = current_user.user
+    data['last_change'] = iris_current_user.user
     emit('change-note', data, to=data['channel'], skip_sid=request.sid, room=data['channel'])
 
 
-@socket_io.on('save-note')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_save_note(data):
 
-    data['last_saved'] = current_user.user
+    data['last_saved'] = iris_current_user.user
     emit('save-note', data, to=data['channel'], skip_sid=request.sid, room=data['channel'])
 
 
-@socket_io.on('clear_buffer-note')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_clear_buffer_note(message):
 
     emit('clear_buffer-note', message, room=message['channel'])
 
 
-@socket_io.on('join-notes')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_join_note(data):
 
@@ -57,33 +53,29 @@ def socket_join_note(data):
     join_room(room=room)
 
     emit('join-notes', {
-        'message': f"{current_user.user} just joined",
-        "user": current_user.user
+        'message': f"{iris_current_user.user} just joined",
+        "user": iris_current_user.user
     }, room=room)
 
 
-@socket_io.on('ping-note')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_ping_note(data):
 
-    emit('ping-note', {"user": current_user.name, "note_id": data['note_id']}, room=data['channel'])
+    emit('ping-note', {"user": iris_current_user.name, "note_id": data['note_id']}, room=data['channel'])
 
 
-@socket_io.on('pong-note')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_pong_note(data):
 
-    emit('pong-note', {"user": current_user.name, "note_id": data['note_id']}, room=data['channel'])
+    emit('pong-note', {"user": iris_current_user.name, "note_id": data['note_id']}, room=data['channel'])
 
 
-@socket_io.on('overview-map-note')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_overview_map_note(data):
 
-    emit('overview-map-note', {"user": current_user.user, "note_id": data['note_id']}, room=data['channel'])
+    emit('overview-map-note', {"user": iris_current_user.user, "note_id": data['note_id']}, room=data['channel'])
 
 
-@socket_io.on('join-notes-overview')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_join_overview(data):
 
@@ -91,12 +83,23 @@ def socket_join_overview(data):
     join_room(room=room)
 
     emit('join-notes-overview', {
-        'message': f"{current_user.user} just joined",
-        "user": current_user.user
+        'message': f"{iris_current_user.user} just joined",
+        "user": iris_current_user.user
     }, room=room)
 
 
-@socket_io.on('disconnect')
 @ac_socket_requires(CaseAccessLevel.full_access)
 def socket_disconnect(data):
-    emit('disconnect', current_user.user, broadcast=True)
+    emit('disconnect', iris_current_user.user, broadcast=True)
+
+
+def register_notes_event_handlers():
+    socket_io.on_event('change-note', socket_change_note)
+    socket_io.on_event('save-note', socket_save_note)
+    socket_io.on_event('clear_buffer-note', socket_clear_buffer_note)
+    socket_io.on_event('join-notes', socket_join_note)
+    socket_io.on_event('ping-note', socket_ping_note)
+    socket_io.on_event('pong-note', socket_pong_note)
+    socket_io.on_event('overview-map-note', socket_overview_map_note)
+    socket_io.on_event('join-notes-overview', socket_join_overview)
+    socket_io.on_event('disconnect', socket_disconnect)

@@ -22,13 +22,13 @@ import json
 import marshmallow.exceptions
 import urllib.parse
 from flask import Blueprint
+from flask import current_app
 from flask import request
 from flask import send_file
-from flask_login import current_user
 from pathlib import Path
 
-import app
-from app import db
+from app.db import db
+from app.blueprints.iris_user import iris_current_user
 from app.datamgmt.datastore.datastore_db import datastore_add_child_node
 from app.datamgmt.datastore.datastore_db import datastore_add_file_as_evidence
 from app.datamgmt.datastore.datastore_db import datastore_add_file_as_ioc
@@ -54,8 +54,6 @@ from app.blueprints.responses import response_success
 
 datastore_rest_blueprint = Blueprint('datastore_rest', __name__)
 
-logger = app.logger
-
 
 @datastore_rest_blueprint.route('/datastore/list/tree', methods=['GET'])
 @ac_requires_case_identifier(CaseAccessLevel.read_only, CaseAccessLevel.full_access)
@@ -77,14 +75,14 @@ def datastore_list_filter(caseid):
         filter_d = dict(json.loads(urllib.parse.unquote_plus(query_filter)))
 
     except Exception as e:
-        logger.error('Error parsing filter: {}'.format(query_filter))
-        logger.error(e)
+        current_app.logger.error(f'Error parsing filter: {query_filter}')
+        current_app.logger.error(e)
         return response_error('Invalid query')
 
     data, log = datastore_filter_tree(filter_d, caseid)
     if data is None:
-        logger.error('Error parsing filter: {}'.format(query_filter))
-        logger.error(log)
+        current_app.logger.error(f'Error parsing filter: {query_filter}')
+        current_app.logger.error(log)
         return response_error('Invalid query')
 
     return response_success("", data=data)
@@ -139,11 +137,11 @@ def datastore_update_file(cur_id: int, caseid: int):
 
         msg_added_as = ''
         if dsf.file_is_ioc:
-            datastore_add_file_as_ioc(dsf, caseid)
+            datastore_add_file_as_ioc(iris_current_user.id, dsf)
             msg_added_as += 'and added in IOC'
 
         if dsf.file_is_evidence:
-            datastore_add_file_as_evidence(dsf, caseid)
+            datastore_add_file_as_evidence(iris_current_user.id, dsf, caseid)
             msg_added_as += ' and evidence' if len(msg_added_as) > 0 else 'and added in evidence'
 
         track_activity(f'File \"{dsf.file_original_name}\" updated in DS', caseid=caseid)
@@ -241,7 +239,7 @@ def datastore_add_file(cur_id: int, caseid: int):
         dsf_sc = dsf_schema.load(request.form, partial=True)
 
         dsf_sc.file_parent_id = dsp.path_id
-        dsf_sc.added_by_user_id = current_user.id
+        dsf_sc.added_by_user_id = iris_current_user.id
         dsf_sc.file_date_added = datetime.datetime.now()
         dsf_sc.file_local_name = 'tmp_xc'
         dsf_sc.file_case_id = caseid
@@ -264,11 +262,11 @@ def datastore_add_file(cur_id: int, caseid: int):
 
         msg_added_as = ''
         if dsf_sc.file_is_ioc:
-            datastore_add_file_as_ioc(dsf_sc, caseid)
+            datastore_add_file_as_ioc(iris_current_user.id, dsf_sc)
             msg_added_as += 'and added in IOC'
 
         if dsf_sc.file_is_evidence:
-            datastore_add_file_as_evidence(dsf_sc, caseid)
+            datastore_add_file_as_evidence(iris_current_user.id, dsf_sc, caseid)
             msg_added_as += ' and evidence' if len(msg_added_as) > 0 else 'and added in evidence'
 
         track_activity(f"File \"{dsf_sc.file_original_name}\" added to DS", caseid=caseid)
