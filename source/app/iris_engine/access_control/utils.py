@@ -744,8 +744,7 @@ def ac_trace_user_effective_cases_access_2(user_id):
         Cases.case_id,
         Cases.name.label('case_name'),
         Client.name.label('client_name'),
-        Client.client_id,
-        Client.client_uuid
+        Client.client_id
     ).join(
         Cases, UserClient.client_id == Cases.client_id
     ).join(
@@ -819,8 +818,7 @@ def ac_trace_user_effective_cases_access_2(user_id):
             'inherited_from': {
                 'object_type': 'customer_access_level',
                 'object_name': cca.client_name,
-                'object_id': cca.client_id,
-                'object_uuid': cca.client_uuid
+                'object_id': cca.client_id
             }
         }
 

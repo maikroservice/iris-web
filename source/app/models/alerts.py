@@ -64,7 +64,7 @@ class Alert(db.Model):
     alert_tags = Column(Text)
     alert_owner_id = Column(ForeignKey('user.id'))
     modification_history = Column(JSON)
-    alert_customer_id = Column(ForeignKey('client.client_id'), nullable=False)
+    alert_customer_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'), nullable=False)
     alert_classification_id = Column(ForeignKey('case_classification.id'))
     alert_resolution_status_id = Column(ForeignKey('alert_resolution_status.resolution_status_id'), nullable=True)
 
@@ -110,7 +110,7 @@ class SimilarAlertsCache(db.Model):
     __tablename__ = 'similar_alerts_cache'
 
     id = Column(BigInteger, primary_key=True)
-    customer_id = Column(BigInteger, ForeignKey('client.client_id'), nullable=False)
+    customer_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'), nullable=False)
     asset_name = Column(Text, nullable=True)
     ioc_value = Column(Text, nullable=True)
     alert_id = Column(BigInteger, ForeignKey('alerts.alert_id'), nullable=False)

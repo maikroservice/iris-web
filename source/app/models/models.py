@@ -270,7 +270,7 @@ class Contact(db.Model):
     contact_work_phone = Column(Text)
     contact_mobile_phone = Column(Text)
     custom_attributes = Column(JSON)
-    client_id = Column(ForeignKey('client.client_id'))
+    client_id = Column(UUID(as_uuid=True), ForeignKey('client.client_id'))
 
     client = relationship('Client')
 
