@@ -38,6 +38,7 @@ from app.datamgmt.case.case_assets_db import get_similar_assets
 from app.datamgmt.case.case_assets_db import case_assets_db_exists
 from app.datamgmt.case.case_assets_db import create_asset
 from app.datamgmt.case.case_assets_db import set_ioc_links
+from app.datamgmt.manage.manage_entity_tags_db import save_asset_tags
 from app.datamgmt.case.case_assets_db import get_linked_iocs_finfo_from_asset
 from app.datamgmt.case.case_assets_db import delete_asset
 from app.iris_engine.module_handler.module_handler import call_modules_hook
@@ -61,6 +62,10 @@ def assets_create(case_identifier, request_json):
     if case_assets_db_exists(asset):
         raise BusinessProcessingError('Asset with same value and type already exists')
     asset = create_asset(asset=asset, caseid=case_identifier, user_id=current_user.id)
+
+    # Save tags to junction table
+    save_asset_tags(asset.asset_tags, asset, commit=True)
+
     # TODO should the custom attributes be set?
     if request_data.get('ioc_links'):
         errors, _ = set_ioc_links(request_data.get('ioc_links'), asset.asset_id)
@@ -154,6 +159,9 @@ def assets_update(asset: CaseAssets, request_json):
 
     if case_assets_db_exists(asset_schema):
         raise BusinessProcessingError('Data error', data='Asset with same value and type already exists')
+
+    # Save tags to junction table
+    save_asset_tags(asset_schema.asset_tags, asset_schema)
 
     update_assets_state(caseid=caseid)
     db.session.commit()

@@ -27,6 +27,8 @@ from app.datamgmt.case.case_iocs_db import check_ioc_type_id
 from app.datamgmt.case.case_iocs_db import get_iocs
 from app.datamgmt.case.case_iocs_db import delete_ioc
 from app.datamgmt.states import update_ioc_state
+from app.datamgmt.manage.manage_entity_tags_db import save_ioc_tags
+from app.models.models import Tags
 from app.schema.marshables import IocSchema
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
@@ -68,6 +70,9 @@ def iocs_create(request_json, case_identifier):
 
     add_ioc(ioc, current_user.id, case_identifier)
 
+    # Save tags to junction table
+    save_ioc_tags(ioc.ioc_tags, ioc, commit=True)
+
     ioc = call_modules_hook('on_postload_ioc_create', data=ioc, caseid=case_identifier)
 
     if ioc:
@@ -98,6 +103,9 @@ def iocs_update(ioc: Ioc, request_json: dict) -> (Ioc, str):
 
         if not check_ioc_type_id(type_id=ioc_sc.ioc_type_id):
             raise BusinessProcessingError('Not a valid IOC type')
+
+        # Save tags to junction table
+        save_ioc_tags(ioc_sc.ioc_tags, ioc_sc)
 
         update_ioc_state(ioc.case_id)
         db.session.commit()
@@ -161,7 +169,8 @@ def iocs_build_filter_query(ioc_id: int = None,
     if ioc_tlp_id is not None:
         conditions.append(Ioc.ioc_tlp_id == ioc_tlp_id)
     if ioc_tags is not None:
-        conditions.append(Ioc.ioc_tags == ioc_tags)
+        tag_list = [t.strip() for t in ioc_tags.split(',') if t.strip()]
+        conditions.append(Ioc.tags.any(Tags.tag_title.in_(tag_list)))
     if ioc_misp is not None:
         conditions.append(Ioc.ioc_misp == ioc_misp)
     if user_id is not None:

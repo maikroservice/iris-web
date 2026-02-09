@@ -23,12 +23,14 @@ from app import db
 from app import app
 from app.datamgmt.states import update_ioc_state
 from app.datamgmt.conversions import convert_sort_direction
+from app.datamgmt.manage.manage_entity_tags_db import save_ioc_tags
 from app.iris_engine.access_control.utils import ac_get_fast_user_cases_access
 from app.models.cases import Cases
 from app.models.models import Client
 from app.models.models import Comments
 from app.models.models import Ioc
 from app.models.models import IocComments
+from app.models.models import Tags
 from app.models.models import IocType
 from app.models.models import Tlp
 from app.models.authorization import User
@@ -57,7 +59,7 @@ def update_ioc(ioc_type, ioc_tags, ioc_value, ioc_description, ioc_tlp, userid, 
 
     if ioc:
         ioc.ioc_type = ioc_type
-        ioc.ioc_tags = ioc_tags
+        save_ioc_tags(ioc_tags, ioc)
         ioc.ioc_value = ioc_value
         ioc.ioc_description = ioc_description
         ioc.ioc_tlp_id = ioc_tlp
@@ -323,7 +325,8 @@ def _build_filter_ioc_query(
         conditions.append(Ioc.ioc_description == ioc_description)
 
     if ioc_tags is not None:
-        conditions.append(Ioc.ioc_tags == ioc_tags)
+        tag_list = [t.strip() for t in ioc_tags.split(',') if t.strip()]
+        conditions.append(Ioc.tags.any(Tags.tag_title.in_(tag_list)))
 
     if caseid is not None:
         conditions.append(Ioc.case_id == caseid)

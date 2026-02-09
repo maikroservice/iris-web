@@ -201,6 +201,7 @@ class CasesEvent(db.Model):
                             secondaryjoin="CaseEventCategory.category_id==EventCategory.id",
                             viewonly=True)
     children = relationship("CasesEvent", backref=backref('parent', remote_side=[event_id]))
+    tags = relationship('Tags', secondary="event_tags", back_populates='events')
 
     __table_args__ = (
         CheckConstraint('event_id != parent_event_id', name='check_different_ids'),

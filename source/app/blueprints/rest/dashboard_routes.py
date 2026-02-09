@@ -35,6 +35,7 @@ from app import oidc_client
 from app.blueprints.rest.endpoints import endpoint_deprecated
 from app.datamgmt.dashboard.dashboard_db import get_global_task, list_user_cases, list_user_reviews
 from app.datamgmt.dashboard.dashboard_db import get_tasks_status
+from app.datamgmt.manage.manage_entity_tags_db import save_global_task_tags
 from app.datamgmt.dashboard.dashboard_db import list_global_tasks
 from app.datamgmt.dashboard.dashboard_db import list_user_tasks
 from app.forms import CaseGlobalTaskForm
@@ -226,6 +227,9 @@ def add_gtask(caseid):
         db.session.add(gtask)
         db.session.commit()
 
+        # Save tags to junction table
+        save_global_task_tags(gtask.task_tags, gtask, commit=True)
+
     except Exception as e:
         return response_error(msg="Data error", data=e.__str__())
 
@@ -260,6 +264,9 @@ def edit_gtask(cur_id, caseid):
         gtask = gtask_schema.load(request_data, instance=task)
         gtask.task_userid_update = current_user.id
         gtask.task_last_update = datetime.utcnow()
+
+        # Save tags to junction table
+        save_global_task_tags(gtask.task_tags, gtask)
 
         db.session.commit()
 

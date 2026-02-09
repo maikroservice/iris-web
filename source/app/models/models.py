@@ -194,6 +194,7 @@ class CaseAssets(db.Model):
 
     alerts = relationship('Alert', secondary=alert_assets_association, back_populates='assets')
     iocs = relationship('IocAssetLink', back_populates='asset')
+    tags = relationship('Tags', secondary="asset_tags", back_populates='assets')
 
 
 class AnalysisStatus(db.Model):
@@ -423,6 +424,7 @@ class Ioc(db.Model):
     events = relationship('CaseEventsIoc', back_populates='ioc', cascade="delete")
     comments = relationship('IocComments', back_populates='ioc', cascade="all, delete")
     alerts = relationship('Alert', secondary=alert_iocs_association, back_populates='iocs')
+    tags = relationship('Tags', secondary="ioc_tags", back_populates='iocs')
 
 
 class CustomAttribute(db.Model):
@@ -471,6 +473,7 @@ class DataStoreFile(db.Model):
     case = relationship('Cases')
     user = relationship('User')
     data_parent = relationship('DataStorePath')
+    tags = relationship('Tags', secondary="file_tags", back_populates='files')
 
 
 class IocType(db.Model):
@@ -658,6 +661,7 @@ class CaseTasks(db.Model):
     user_close = relationship('User', foreign_keys=[task_userid_close])
     user_update = relationship('User', foreign_keys=[task_userid_update])
     status = relationship('TaskStatus', foreign_keys=[task_status_id])
+    tags = relationship('Tags', secondary="case_task_tags", back_populates='case_tasks')
 
 
 class Tags(db.Model):
@@ -669,6 +673,13 @@ class Tags(db.Model):
     tag_namespace = Column(Text)
 
     cases = relationship('Cases', secondary="case_tags", back_populates='tags', viewonly=True)
+    iocs = relationship('Ioc', secondary="ioc_tags", back_populates='tags', viewonly=True)
+    assets = relationship('CaseAssets', secondary="asset_tags", back_populates='tags', viewonly=True)
+    alerts = relationship('Alert', secondary="alert_tags", back_populates='tags', viewonly=True)
+    events = relationship('CasesEvent', secondary="event_tags", back_populates='tags', viewonly=True)
+    case_tasks = relationship('CaseTasks', secondary="case_task_tags", back_populates='tags', viewonly=True)
+    global_tasks = relationship('GlobalTasks', secondary="global_task_tags", back_populates='tags', viewonly=True)
+    files = relationship('DataStoreFile', secondary="file_tags", back_populates='tags', viewonly=True)
 
     def __init__(self, tag_title, namespace=None):
         self.id = None
@@ -688,6 +699,76 @@ class Tags(db.Model):
     @classmethod
     def get_by_title(cls, tag_title):
         return cls.query.filter_by(tag_title=tag_title).first()
+
+
+class IocTags(db.Model):
+    __tablename__ = 'ioc_tags'
+    __table_args__ = (
+        UniqueConstraint('ioc_id', 'tag_id', name='ioc_tags_ioc_id_tag_id_key'),
+    )
+
+    ioc_id = Column(ForeignKey('ioc.ioc_id'), primary_key=True, nullable=False)
+    tag_id = Column(ForeignKey('tags.id'), primary_key=True, nullable=False, index=True)
+
+
+class AssetTags(db.Model):
+    __tablename__ = 'asset_tags'
+    __table_args__ = (
+        UniqueConstraint('asset_id', 'tag_id', name='asset_tags_asset_id_tag_id_key'),
+    )
+
+    asset_id = Column(ForeignKey('case_assets.asset_id'), primary_key=True, nullable=False)
+    tag_id = Column(ForeignKey('tags.id'), primary_key=True, nullable=False, index=True)
+
+
+class AlertTags(db.Model):
+    __tablename__ = 'alert_tags'
+    __table_args__ = (
+        UniqueConstraint('alert_id', 'tag_id', name='alert_tags_alert_id_tag_id_key'),
+    )
+
+    alert_id = Column(ForeignKey('alerts.alert_id'), primary_key=True, nullable=False)
+    tag_id = Column(ForeignKey('tags.id'), primary_key=True, nullable=False, index=True)
+
+
+class EventTags(db.Model):
+    __tablename__ = 'event_tags'
+    __table_args__ = (
+        UniqueConstraint('event_id', 'tag_id', name='event_tags_event_id_tag_id_key'),
+    )
+
+    event_id = Column(ForeignKey('cases_events.event_id'), primary_key=True, nullable=False)
+    tag_id = Column(ForeignKey('tags.id'), primary_key=True, nullable=False, index=True)
+
+
+class CaseTaskTags(db.Model):
+    __tablename__ = 'case_task_tags'
+    __table_args__ = (
+        UniqueConstraint('task_id', 'tag_id', name='case_task_tags_task_id_tag_id_key'),
+    )
+
+    task_id = Column(ForeignKey('case_tasks.id'), primary_key=True, nullable=False)
+    tag_id = Column(ForeignKey('tags.id'), primary_key=True, nullable=False, index=True)
+
+
+class GlobalTaskTags(db.Model):
+    __tablename__ = 'global_task_tags'
+    __table_args__ = (
+        UniqueConstraint('task_id', 'tag_id', name='global_task_tags_task_id_tag_id_key'),
+    )
+
+    task_id = Column(ForeignKey('global_tasks.id'), primary_key=True, nullable=False)
+    tag_id = Column(ForeignKey('tags.id'), primary_key=True, nullable=False, index=True)
+
+
+class FileTags(db.Model):
+    __tablename__ = 'file_tags'
+    __table_args__ = (
+        UniqueConstraint('file_id', 'tag_id', name='file_tags_file_id_tag_id_key'),
+    )
+
+    file_id = Column(ForeignKey('data_store_file.file_id'), primary_key=True, nullable=False)
+    tag_id = Column(ForeignKey('tags.id'), primary_key=True, nullable=False, index=True)
 
 
 class TaskAssignee(db.Model):
@@ -725,6 +806,7 @@ class GlobalTasks(db.Model):
     user_update = relationship('User', foreign_keys=[task_userid_update])
     user_assigned = relationship('User', foreign_keys=[task_assignee_id])
     status = relationship('TaskStatus', foreign_keys=[task_status_id])
+    tags = relationship('Tags', secondary="global_task_tags", back_populates='global_tasks')
 
 
 class UserActivity(db.Model):

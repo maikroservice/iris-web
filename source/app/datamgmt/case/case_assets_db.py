@@ -25,6 +25,7 @@ from flask_sqlalchemy.pagination import Pagination
 
 from app import db, app
 from app.datamgmt.states import update_assets_state
+from app.datamgmt.manage.manage_entity_tags_db import save_asset_tags
 from app.datamgmt.conversions import convert_sort_direction
 from app.models.models import AnalysisStatus
 from app.models.models import CaseStatus
@@ -150,7 +151,7 @@ def update_asset(asset_name, asset_description, asset_ip, asset_info, asset_doma
     asset.asset_compromise_status_id = asset_compromise_status_id
     asset.asset_type_id = asset_type
     asset.analysis_status_id = analysis_status
-    asset.asset_tags = asset_tags
+    save_asset_tags(asset_tags, asset)
 
     update_assets_state(caseid=caseid)
 

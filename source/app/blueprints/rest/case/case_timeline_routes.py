@@ -32,6 +32,8 @@ from app import app
 from app.blueprints.rest.case_comments import case_comment_update
 from app.datamgmt.case.case_assets_db import get_asset_by_name
 from app.datamgmt.case.case_events_db import add_comment_to_event
+from app.datamgmt.manage.manage_entity_tags_db import save_event_tags
+from app.models.models import Tags
 from app.datamgmt.case.case_events_db import get_category_by_name
 from app.datamgmt.case.case_events_db import get_default_category
 from app.datamgmt.case.case_events_db import delete_event
@@ -384,7 +386,7 @@ def case_filter_timeline(caseid):
     if tags:
         for tag in tags:
             condition = and_(condition,
-                             CasesEvent.event_tags.ilike(f'%{tag}%'))
+                             CasesEvent.tags.any(Tags.tag_title.ilike(f'%{tag}%')))
 
     if titles:
         for title in titles:
@@ -703,6 +705,9 @@ def case_edit_event(cur_id, caseid):
         event.case_id = caseid
         add_obj_history_entry(event, 'updated')
 
+        # Save tags to junction table
+        save_event_tags(event.event_tags, event)
+
         update_timeline_state(caseid=caseid)
         db.session.commit()
 
@@ -763,6 +768,9 @@ def case_add_event(caseid):
         db.session.add(event)
         update_timeline_state(caseid=caseid)
         db.session.commit()
+
+        # Save tags to junction table
+        save_event_tags(event.event_tags, event, commit=True)
 
         save_event_category(event.event_id, request_data.get('event_category_id'))
 

@@ -28,6 +28,7 @@ from werkzeug import Response
 import app
 from app import db
 from app.blueprints.rest.endpoints import endpoint_deprecated
+from app.datamgmt.manage.manage_entity_tags_db import save_alert_tags
 from app.blueprints.rest.parsing import parse_comma_separated_identifiers
 from app.blueprints.rest.case_comments import case_comment_update
 from app.datamgmt.alerts.alerts_db import get_filtered_alerts
@@ -400,6 +401,9 @@ def alerts_update_route(alert_id) -> Response:
         if data.get('alert_owner_id') == "-1" or data.get('alert_owner_id') == -1:
             updated_alert.alert_owner_id = None
 
+        # Save tags to junction table
+        save_alert_tags(updated_alert.alert_tags, updated_alert)
+
         # Save the changes
         db.session.commit()
 
@@ -486,6 +490,9 @@ def alerts_batch_update_route() -> Response:
 
             # Deserialize the JSON data into an Alert object
             alert_schema.load(updates, instance=alert, partial=True)
+
+            # Save tags to junction table
+            save_alert_tags(alert.alert_tags, alert)
 
             db.session.commit()
 

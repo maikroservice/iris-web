@@ -28,6 +28,7 @@ from app.datamgmt.case.case_tasks_db import update_task_assignees
 from app.datamgmt.case.case_tasks_db import get_task
 from app.datamgmt.case.case_tasks_db import get_filtered_tasks
 from app.datamgmt.states import update_tasks_state
+from app.datamgmt.manage.manage_entity_tags_db import save_case_task_tags
 from app.iris_engine.module_handler.module_handler import call_modules_hook
 from app.iris_engine.utils.tracker import track_activity
 from app.models.models import CaseTasks
@@ -72,6 +73,9 @@ def tasks_create(case_identifier: int, request_json: dict) -> (str, CaseTasks):
                      caseid=case_identifier
                      )
 
+    # Save tags to junction table
+    save_case_task_tags(ctask.task_tags, ctask, commit=True)
+
     ctask = call_modules_hook('on_postload_task_create', data=ctask, caseid=case_identifier)
 
     if ctask:
@@ -108,6 +112,9 @@ def tasks_update(task: CaseTasks, request_json):
     task.task_last_update = datetime.utcnow()
 
     update_task_assignees(task.id, task_assignee_list, case_identifier)
+
+    # Save tags to junction table
+    save_case_task_tags(task.task_tags, task)
 
     update_tasks_state(caseid=case_identifier)
 

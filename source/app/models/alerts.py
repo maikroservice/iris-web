@@ -80,6 +80,7 @@ class Alert(db.Model):
 
     assets = relationship('CaseAssets', secondary=alert_assets_association, back_populates='alerts')
     iocs = relationship('Ioc', secondary=alert_iocs_association, back_populates='alerts')
+    tags = relationship('Tags', secondary="alert_tags", back_populates='alerts')
 
 
 class Severity(db.Model):
