@@ -20,6 +20,7 @@ from flask import Blueprint
 from flask import request
 from sqlalchemy import and_
 
+from app.forms import SearchForm
 from app.iris_engine.utils.tracker import track_activity
 from app.models.models import Comments
 from app.models.authorization import Permissions

@@ -27,23 +27,13 @@ from werkzeug import Response
 
 import app
 from app import db
-from app.blueprints.rest.endpoints import endpoint_deprecated
-from app.blueprints.rest.parsing import parse_comma_separated_identifiers
-from app.blueprints.rest.case_comments import case_comment_update
-from app.datamgmt.alerts.alerts_db import get_filtered_alerts
-from app.datamgmt.alerts.alerts_db import get_alert_by_id
-from app.datamgmt.alerts.alerts_db import create_case_from_alert
-from app.datamgmt.alerts.alerts_db import delete_related_alerts_cache
-from app.datamgmt.alerts.alerts_db import merge_alert_in_case
-from app.datamgmt.alerts.alerts_db import unmerge_alert_from_case
-from app.datamgmt.alerts.alerts_db import cache_similar_alert
-from app.datamgmt.alerts.alerts_db import get_related_alerts
-from app.datamgmt.alerts.alerts_db import get_related_alerts_details
-from app.datamgmt.alerts.alerts_db import get_alert_comments
-from app.datamgmt.alerts.alerts_db import delete_alert_comment
-from app.datamgmt.alerts.alerts_db import get_alert_comment
-from app.datamgmt.alerts.alerts_db import delete_similar_alert_cache
-from app.datamgmt.alerts.alerts_db import delete_alerts
+from app.blueprints.case.case_comments import case_comment_update
+from app.datamgmt.alerts.alerts_db import get_filtered_alerts, get_alert_by_id, create_case_from_alert, \
+    delete_related_alerts_cache
+from app.datamgmt.alerts.alerts_db import merge_alert_in_case, unmerge_alert_from_case, cache_similar_alert
+from app.datamgmt.alerts.alerts_db import get_related_alerts, get_related_alerts_details
+from app.datamgmt.alerts.alerts_db import get_alert_comments, delete_alert_comment, get_alert_comment
+from app.datamgmt.alerts.alerts_db import delete_similar_alert_cache, delete_alerts
 from app.datamgmt.alerts.alerts_db import create_case_from_alerts
 from app.datamgmt.case.case_db import get_case
 from app.datamgmt.manage.manage_access_control_db import check_ua_case_client
@@ -416,8 +406,8 @@ def alerts_update_route(alert_id) -> Response:
             track_activity(f'updated alert #{alert_id}: {activity_data_as_string}', ctx_less=True)
             add_obj_history_entry(updated_alert, f'updated alert: {activity_data_as_string}')
         else:
-            track_activity(f'updated alert #{alert_id}', ctx_less=True)
-            add_obj_history_entry(updated_alert, 'updated alert')
+            track_activity(f"updated alert #{alert_id}", ctx_less=True)
+            add_obj_history_entry(updated_alert, "updated alert")
 
         db.session.commit()
 
@@ -1057,7 +1047,7 @@ def alert_comment_edit(alert_id, com_id):
     if not user_has_client_access(current_user.id, alert.alert_customer_id):
         return response_error('User not entitled to read alerts for the client', status=403)
 
-    return case_comment_update(com_id, 'events', None)
+    return case_comment_update(com_id, 'alerts', None)
 
 
 @alerts_rest_blueprint.route('/alerts/<int:alert_id>/comments/add', methods=['POST'])

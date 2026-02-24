@@ -113,7 +113,7 @@ def build_condition(column, operator, value):
                 "Non-in operators on relationships require specifying a related model column, e.g., owner.id or assets.asset_name.")
 
     # If we get here, 'column' should be an actual column, not a relationship.
-    if operator == 'not':
+    if operator == 'not' or operator == 'neq':
         return column != value
     elif operator == 'in':
         return column.in_(value)
@@ -123,6 +123,8 @@ def build_condition(column, operator, value):
         return column == value
     elif operator == 'like':
         return column.ilike(f"%{value}%")
+    elif operator == 'not_like':
+        return ~column.ilike(f"%{value}%")
     else:
         raise ValueError(f"Unsupported operator: {operator}")
 
@@ -795,7 +797,6 @@ def merge_alert_in_case(alert: Alert, case: Cases, iocs_list: List[str],
 
                 alert_asset.analysis_status_id = get_unspecified_analysis_status_id()
 
-                # Check if the asset exists already in the case
                 tmp_asset = CaseAssets.query.filter(and_(
                     CaseAssets.asset_name == alert_asset.asset_name,
                     CaseAssets.asset_type_id == alert_asset.asset_type_id,

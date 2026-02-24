@@ -56,6 +56,15 @@ datastore_rest_blueprint = Blueprint('datastore_rest', __name__)
 
 logger = app.logger
 
+ALLOWED_FIELDS_DS_FILE = [
+    'file_original_name',
+    'file_description',
+    'file_is_ioc',
+    'file_is_evidence',
+    'file_password',
+    'file_tags',
+    'file_parent_id'
+]
 
 @datastore_rest_blueprint.route('/datastore/list/tree', methods=['GET'])
 @ac_requires_case_identifier(CaseAccessLevel.read_only, CaseAccessLevel.full_access)
@@ -115,8 +124,13 @@ def datastore_update_file(cur_id: int, caseid: int):
 
     dsf_schema = DSFileSchema()
     try:
-
-        dsf_sc = dsf_schema.load(request.form, instance=dsf, partial=True)
+        # Ensure the form only contains fields that are allowed to be updated
+        # Remove the fields that are not allowed to be updated
+        form_data = request.form.to_dict()
+        for key in list(form_data.keys()):
+            if key not in ALLOWED_FIELDS_DS_FILE:
+                form_data.pop(key)
+        dsf_sc = dsf_schema.load(form_data, instance=dsf, partial=True)
         add_obj_history_entry(dsf_sc, 'updated')
 
         dsf.file_is_ioc = request.form.get('file_is_ioc') is not None or request.form.get('file_is_ioc') is True
@@ -238,7 +252,12 @@ def datastore_add_file(cur_id: int, caseid: int):
     dsf_schema = DSFileSchema()
     try:
 
-        dsf_sc = dsf_schema.load(request.form, partial=True)
+        form_data = request.form.to_dict()
+        for key in list(form_data.keys()):
+            if key not in ALLOWED_FIELDS_DS_FILE:
+                form_data.pop(key)
+
+        dsf_sc = dsf_schema.load(form_data, partial=True)
 
         dsf_sc.file_parent_id = dsp.path_id
         dsf_sc.added_by_user_id = current_user.id
